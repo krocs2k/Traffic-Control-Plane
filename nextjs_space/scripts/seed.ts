@@ -1,4 +1,4 @@
-import { PrismaClient, Role, BackendStatus, LoadBalancerStrategy, RoutingPolicyType, ReplicaStatus, NotificationType, NotificationSeverity, RecommendationCategory, RecommendationStatus, CircuitBreakerState, RateLimitType, HealthCheckStatus } from '@prisma/client';
+import { PrismaClient, Role, BackendStatus, LoadBalancerStrategy, RoutingPolicyType, ReplicaStatus, NotificationType, NotificationSeverity, RecommendationCategory, RecommendationStatus, CircuitBreakerState, RateLimitType, HealthCheckStatus, ExperimentType, ExperimentStatus, AlertSeverity, AlertRuleType, AlertStatus } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
@@ -891,6 +891,308 @@ async function main() {
   });
   console.log('Created metric snapshot');
 
+  // ============================================
+  // Create Experiments (Canary/AB Testing)
+  // ============================================
+  const experiment1 = await prisma.experiment.upsert({
+    where: { orgId_name: { orgId: acmeCorp.id, name: 'Checkout Flow Optimization' } },
+    update: {},
+    create: {
+      orgId: acmeCorp.id,
+      name: 'Checkout Flow Optimization',
+      description: 'Testing new streamlined checkout flow vs current implementation',
+      type: ExperimentType.AB_TEST,
+      status: ExperimentStatus.RUNNING,
+      rolloutPercentage: 30,
+      successMetric: 'conversion_rate > 0.05',
+      startedAt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
+      targetRoutes: ['/checkout/*', '/cart/*'],
+    },
+  });
+
+  await prisma.experimentVariant.upsert({
+    where: { experimentId_name: { experimentId: experiment1.id, name: 'Control' } },
+    update: {},
+    create: {
+      experimentId: experiment1.id,
+      name: 'Control',
+      description: 'Current checkout flow',
+      weight: 50,
+      isControl: true,
+    },
+  });
+
+  const variant1B = await prisma.experimentVariant.upsert({
+    where: { experimentId_name: { experimentId: experiment1.id, name: 'Variant A' } },
+    update: {},
+    create: {
+      experimentId: experiment1.id,
+      name: 'Variant A',
+      description: 'Streamlined single-page checkout',
+      weight: 50,
+      isControl: false,
+    },
+  });
+  console.log('Created experiment:', experiment1.name);
+
+  const experiment2 = await prisma.experiment.upsert({
+    where: { orgId_name: { orgId: acmeCorp.id, name: 'New API Version Canary' } },
+    update: {},
+    create: {
+      orgId: acmeCorp.id,
+      name: 'New API Version Canary',
+      description: 'Gradual rollout of API v2 with improved performance',
+      type: ExperimentType.CANARY,
+      status: ExperimentStatus.RUNNING,
+      rolloutPercentage: 10,
+      successMetric: 'latency < 100ms AND error_rate < 1%',
+      startedAt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000),
+      targetRoutes: ['/api/v2/*'],
+    },
+  });
+
+  await prisma.experimentVariant.upsert({
+    where: { experimentId_name: { experimentId: experiment2.id, name: 'Stable' } },
+    update: {},
+    create: {
+      experimentId: experiment2.id,
+      name: 'Stable',
+      description: 'Current API v1',
+      weight: 90,
+      isControl: true,
+    },
+  });
+
+  await prisma.experimentVariant.upsert({
+    where: { experimentId_name: { experimentId: experiment2.id, name: 'Canary' } },
+    update: {},
+    create: {
+      experimentId: experiment2.id,
+      name: 'Canary',
+      description: 'New API v2',
+      weight: 10,
+      isControl: false,
+    },
+  });
+  console.log('Created experiment:', experiment2.name);
+
+  const experiment3 = await prisma.experiment.upsert({
+    where: { orgId_name: { orgId: acmeCorp.id, name: 'Feature Flag: Dark Mode' } },
+    update: {},
+    create: {
+      orgId: acmeCorp.id,
+      name: 'Feature Flag: Dark Mode',
+      description: 'Rolling out dark mode to users',
+      type: ExperimentType.FEATURE_FLAG,
+      status: ExperimentStatus.DRAFT,
+      rolloutPercentage: 0,
+      targetRoutes: ['/*'],
+    },
+  });
+  console.log('Created experiment:', experiment3.name);
+
+  // ============================================
+  // Create Load Balancer Configs
+  // ============================================
+  const lbConfig1 = await prisma.loadBalancerConfig.upsert({
+    where: { clusterId: productionCluster.id },
+    update: {},
+    create: {
+      orgId: acmeCorp.id,
+      clusterId: productionCluster.id,
+      strategy: LoadBalancerStrategy.LEAST_CONNECTIONS,
+      stickySession: true,
+      sessionCookieName: 'PROD_SESSION',
+      sessionTtlMs: 7200000,
+      healthCheckEnabled: true,
+      healthCheckIntervalMs: 15000,
+      healthCheckPath: '/health',
+      healthCheckTimeoutMs: 3000,
+      failoverEnabled: true,
+      failoverThreshold: 2,
+      retryEnabled: true,
+      maxRetries: 3,
+      retryDelayMs: 500,
+      connectionDrainingMs: 60000,
+      slowStartMs: 30000,
+    },
+  });
+  console.log('Created load balancer config for:', productionCluster.name);
+
+  const lbConfig2 = await prisma.loadBalancerConfig.upsert({
+    where: { clusterId: canaryCluster.id },
+    update: {},
+    create: {
+      orgId: acmeCorp.id,
+      clusterId: canaryCluster.id,
+      strategy: LoadBalancerStrategy.WEIGHTED_ROUND_ROBIN,
+      stickySession: false,
+      healthCheckEnabled: true,
+      healthCheckIntervalMs: 10000,
+      healthCheckPath: '/ready',
+      healthCheckTimeoutMs: 2000,
+      failoverEnabled: true,
+      failoverThreshold: 3,
+      retryEnabled: true,
+      maxRetries: 2,
+      retryDelayMs: 1000,
+      connectionDrainingMs: 30000,
+      weights: {},
+    },
+  });
+  console.log('Created load balancer config for:', canaryCluster.name);
+
+  // ============================================
+  // Create Alert Rules
+  // ============================================
+  const alertRule1 = await prisma.alertRule.upsert({
+    where: { orgId_name: { orgId: acmeCorp.id, name: 'High Latency Alert' } },
+    update: {},
+    create: {
+      orgId: acmeCorp.id,
+      name: 'High Latency Alert',
+      description: 'Alert when average latency exceeds threshold',
+      type: AlertRuleType.THRESHOLD,
+      isActive: true,
+      metric: 'latency',
+      condition: '>',
+      threshold: 200,
+      duration: 60000,
+      severity: AlertSeverity.HIGH,
+      cooldownMs: 300000,
+    },
+  });
+  console.log('Created alert rule:', alertRule1.name);
+
+  const alertRule2 = await prisma.alertRule.upsert({
+    where: { orgId_name: { orgId: acmeCorp.id, name: 'Error Rate Spike' } },
+    update: {},
+    create: {
+      orgId: acmeCorp.id,
+      name: 'Error Rate Spike',
+      description: 'Alert when error rate exceeds 5%',
+      type: AlertRuleType.THRESHOLD,
+      isActive: true,
+      metric: 'error_rate',
+      condition: '>',
+      threshold: 5,
+      duration: 120000,
+      severity: AlertSeverity.CRITICAL,
+      cooldownMs: 600000,
+    },
+  });
+  console.log('Created alert rule:', alertRule2.name);
+
+  const alertRule3 = await prisma.alertRule.upsert({
+    where: { orgId_name: { orgId: acmeCorp.id, name: 'Low Traffic Warning' } },
+    update: {},
+    create: {
+      orgId: acmeCorp.id,
+      name: 'Low Traffic Warning',
+      description: 'Alert when requests per second drops below threshold',
+      type: AlertRuleType.THRESHOLD,
+      isActive: true,
+      metric: 'requests_per_second',
+      condition: '<',
+      threshold: 10,
+      duration: 180000,
+      severity: AlertSeverity.MEDIUM,
+      cooldownMs: 900000,
+    },
+  });
+  console.log('Created alert rule:', alertRule3.name);
+
+  const alertRule4 = await prisma.alertRule.upsert({
+    where: { orgId_name: { orgId: acmeCorp.id, name: 'High CPU Usage' } },
+    update: {},
+    create: {
+      orgId: acmeCorp.id,
+      name: 'High CPU Usage',
+      description: 'Alert when CPU usage exceeds 80%',
+      type: AlertRuleType.THRESHOLD,
+      isActive: true,
+      metric: 'cpu_usage',
+      condition: '>=',
+      threshold: 80,
+      duration: 60000,
+      severity: AlertSeverity.HIGH,
+      cooldownMs: 300000,
+    },
+  });
+  console.log('Created alert rule:', alertRule4.name);
+
+  // Create some sample alerts
+  await prisma.alert.create({
+    data: {
+      orgId: acmeCorp.id,
+      ruleId: alertRule1.id,
+      severity: AlertSeverity.HIGH,
+      status: AlertStatus.ACTIVE,
+      title: 'High Latency Alert - API Gateway',
+      message: 'latency is 245.50 which is > 200',
+      metricValue: 245.5,
+      threshold: 200,
+      targetType: 'cluster',
+    },
+  });
+
+  await prisma.alert.create({
+    data: {
+      orgId: acmeCorp.id,
+      ruleId: alertRule2.id,
+      severity: AlertSeverity.CRITICAL,
+      status: AlertStatus.ACKNOWLEDGED,
+      title: 'Error Rate Spike - Payment Service',
+      message: 'error_rate is 6.20 which is > 5',
+      metricValue: 6.2,
+      threshold: 5,
+      targetType: 'backend',
+      acknowledgedBy: 'alice@acme.com',
+      acknowledgedAt: new Date(),
+    },
+  });
+
+  await prisma.alert.create({
+    data: {
+      orgId: acmeCorp.id,
+      ruleId: alertRule3.id,
+      severity: AlertSeverity.MEDIUM,
+      status: AlertStatus.RESOLVED,
+      title: 'Low Traffic Warning - US Region',
+      message: 'requests_per_second is 5.30 which is < 10',
+      metricValue: 5.3,
+      threshold: 10,
+      resolvedAt: new Date(),
+    },
+  });
+  console.log('Created sample alerts');
+
+  // Create alert channels
+  await prisma.alertChannel.upsert({
+    where: { orgId_name: { orgId: acmeCorp.id, name: 'Ops Team Email' } },
+    update: {},
+    create: {
+      orgId: acmeCorp.id,
+      name: 'Ops Team Email',
+      type: 'email',
+      config: { recipients: ['ops@acme.com', 'alice@acme.com'] },
+      isActive: true,
+    },
+  });
+
+  await prisma.alertChannel.upsert({
+    where: { orgId_name: { orgId: acmeCorp.id, name: 'Slack Alerts' } },
+    update: {},
+    create: {
+      orgId: acmeCorp.id,
+      name: 'Slack Alerts',
+      type: 'slack',
+      config: { webhookUrl: 'https://hooks.slack.com/services/xxx/yyy/zzz', channel: '#alerts' },
+      isActive: true,
+    },
+  });
+  console.log('Created alert channels');
+
   console.log('\nSeeding completed successfully!');
   console.log('\nDemo Organizations:');
   console.log('  - Acme Corp (acme-corp)');
@@ -907,6 +1209,11 @@ async function main() {
   console.log('  Read Replicas: us-east-1, us-west-2, eu-west-1, ap-southeast-1');
   console.log('  Circuit Breakers: API Gateway Breaker, Payment Service Breaker, Legacy System Breaker');
   console.log('  Rate Limits: Global API, Per-IP, Auth Endpoint, High Traffic Route');
+  console.log('\nNew Features Demo Data:');
+  console.log('  Experiments: Checkout Flow Optimization (A/B Test), New API Version Canary, Feature Flag: Dark Mode');
+  console.log('  Load Balancing Configs: Production (Least Connections), Canary (Weighted Round Robin)');
+  console.log('  Alert Rules: High Latency, Error Rate Spike, Low Traffic Warning, High CPU Usage');
+  console.log('  Alert Channels: Ops Team Email, Slack Alerts');
 }
 
 main()

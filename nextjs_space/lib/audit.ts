@@ -46,7 +46,24 @@ export type AuditAction =
   // Rate Limit Actions
   | 'rate_limit.created'
   | 'rate_limit.updated'
-  | 'rate_limit.deleted';
+  | 'rate_limit.deleted'
+  // Experiment Actions
+  | 'experiment.created'
+  | 'experiment.updated'
+  | 'experiment.deleted'
+  // Load Balancer Actions
+  | 'loadbalancer.config.created'
+  | 'loadbalancer.config.updated'
+  | 'loadbalancer.config.deleted'
+  // Alert Actions
+  | 'alert.rule.created'
+  | 'alert.rule.updated'
+  | 'alert.rule.deleted'
+  | 'alert.channel.created'
+  | 'alert.acknowledged'
+  | 'alert.resolved'
+  | 'alert.silenced'
+  | 'alert.updated';
 
 export interface AuditDetails {
   before?: Record<string, unknown>;

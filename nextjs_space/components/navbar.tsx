@@ -20,9 +20,12 @@ import {
   Server,
   Database,
   Bell,
+  BellRing,
   Activity,
   BarChart3,
   Shield,
+  FlaskConical,
+  Shuffle,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
@@ -198,6 +201,30 @@ export function Navbar() {
                 <Link href="/dashboard/traffic-management">
                   <Shield className="h-4 w-4 mr-2" />
                   Traffic
+                </Link>
+              </Button>
+            )}
+            {(canViewResources || canManageRouting) && (
+              <Button variant="ghost" size="sm" asChild>
+                <Link href="/dashboard/experiments">
+                  <FlaskConical className="h-4 w-4 mr-2" />
+                  Experiments
+                </Link>
+              </Button>
+            )}
+            {(canViewResources || canManageRouting) && (
+              <Button variant="ghost" size="sm" asChild>
+                <Link href="/dashboard/load-balancing">
+                  <Shuffle className="h-4 w-4 mr-2" />
+                  Load Balancing
+                </Link>
+              </Button>
+            )}
+            {canViewResources && (
+              <Button variant="ghost" size="sm" asChild>
+                <Link href="/dashboard/alerts">
+                  <BellRing className="h-4 w-4 mr-2" />
+                  Alerts
                 </Link>
               </Button>
             )}

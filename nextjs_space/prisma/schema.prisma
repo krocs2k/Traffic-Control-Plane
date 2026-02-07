@@ -530,3 +530,224 @@ model Recommendation {
   @@index([createdAt])
   @@map("recommendations")
 }
+
+// ============================================
+// Canary / A/B Testing
+// ============================================
+
+enum ExperimentType {
+  CANARY
+  AB_TEST
+  BLUE_GREEN
+  FEATURE_FLAG
+}
+
+enum ExperimentStatus {
+  DRAFT
+  RUNNING
+  PAUSED
+  COMPLETED
+  ABORTED
+}
+
+model Experiment {
+  id           String           @id @default(cuid())
+  orgId        String
+  name         String
+  description  String?
+  type         ExperimentType   @default(AB_TEST)
+  status       ExperimentStatus @default(DRAFT)
+  clusterId    String?
+  targetRoutes String[]         @default([])
+  startedAt    DateTime?
+  endedAt      DateTime?
+  rolloutPercentage Int         @default(10)
+  successMetric String?         // e.g., "latency < 100ms" or "error_rate < 1%"
+  metadata     Json             @default("{}")
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  variants     ExperimentVariant[]
+  metrics      ExperimentMetric[]
+
+  @@unique([orgId, name])
+  @@index([orgId])
+  @@index([status])
+  @@index([type])
+  @@map("experiments")
+}
+
+model ExperimentVariant {
+  id           String      @id @default(cuid())
+  experiment   Experiment  @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+  experimentId String
+  name         String
+  description  String?
+  backendId    String?
+  weight       Int         @default(50)
+  isControl    Boolean     @default(false)
+  config       Json        @default("{}")
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  metrics      ExperimentMetric[]
+
+  @@unique([experimentId, name])
+  @@index([experimentId])
+  @@map("experiment_variants")
+}
+
+model ExperimentMetric {
+  id           String            @id @default(cuid())
+  experiment   Experiment        @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+  experimentId String
+  variant      ExperimentVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  variantId    String?
+  requestCount Int               @default(0)
+  errorCount   Int               @default(0)
+  avgLatencyMs Float             @default(0)
+  p50LatencyMs Float?
+  p95LatencyMs Float?
+  p99LatencyMs Float?
+  conversionRate Float?
+  customMetrics Json             @default("{}")
+  recordedAt   DateTime          @default(now())
+
+  @@index([experimentId])
+  @@index([variantId])
+  @@index([recordedAt])
+  @@map("experiment_metrics")
+}
+
+// ============================================
+// Advanced Load Balancing
+// ============================================
+
+model LoadBalancerConfig {
+  id               String   @id @default(cuid())
+  orgId            String
+  clusterId        String   @unique
+  strategy         LoadBalancerStrategy @default(ROUND_ROBIN)
+  stickySession    Boolean  @default(false)
+  sessionCookieName String? @default("LB_SESSION")
+  sessionTtlMs     Int      @default(3600000)
+  healthCheckEnabled Boolean @default(true)
+  healthCheckIntervalMs Int @default(30000)
+  healthCheckPath  String   @default("/health")
+  healthCheckTimeoutMs Int  @default(5000)
+  failoverEnabled  Boolean  @default(true)
+  failoverThreshold Int     @default(3)
+  retryEnabled     Boolean  @default(true)
+  maxRetries       Int      @default(3)
+  retryDelayMs     Int      @default(1000)
+  connectionDrainingMs Int  @default(30000)
+  slowStartMs      Int?     // Gradual traffic increase for new backends
+  weights          Json     @default("{}") // Backend ID -> weight mapping
+  metadata         Json     @default("{}")
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([orgId])
+  @@index([clusterId])
+  @@map("load_balancer_configs")
+}
+
+// ============================================
+// Real-Time Alerting
+// ============================================
+
+enum AlertSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum AlertStatus {
+  ACTIVE
+  ACKNOWLEDGED
+  RESOLVED
+  SILENCED
+}
+
+enum AlertRuleType {
+  THRESHOLD
+  ANOMALY
+  ABSENCE
+  COMPOSITE
+}
+
+model AlertRule {
+  id               String        @id @default(cuid())
+  orgId            String
+  name             String
+  description      String?
+  type             AlertRuleType @default(THRESHOLD)
+  isActive         Boolean       @default(true)
+  metric           String        // e.g., "latency", "error_rate", "requests_per_second"
+  condition        String        // e.g., ">", "<", ">=", "<=", "=="
+  threshold        Float
+  duration         Int           @default(60000) // How long condition must be true (ms)
+  severity         AlertSeverity @default(MEDIUM)
+  targetType       String?       // backend, cluster, replica, global
+  targetId         String?
+  cooldownMs       Int           @default(300000) // Don't re-alert for this duration
+  notifyChannels   String[]      @default([])
+  escalationPolicy Json          @default("{}")
+  metadata         Json          @default("{}")
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  alerts           Alert[]
+
+  @@unique([orgId, name])
+  @@index([orgId])
+  @@index([isActive])
+  @@index([metric])
+  @@map("alert_rules")
+}
+
+model Alert {
+  id             String        @id @default(cuid())
+  orgId          String
+  rule           AlertRule?    @relation(fields: [ruleId], references: [id], onDelete: SetNull)
+  ruleId         String?
+  severity       AlertSeverity @default(MEDIUM)
+  status         AlertStatus   @default(ACTIVE)
+  title          String
+  message        String
+  metricValue    Float?
+  threshold      Float?
+  targetType     String?
+  targetId       String?
+  acknowledgedBy String?
+  acknowledgedAt DateTime?
+  resolvedAt     DateTime?
+  notifiedAt     DateTime?
+  metadata       Json          @default("{}")
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@index([orgId])
+  @@index([ruleId])
+  @@index([status])
+  @@index([severity])
+  @@index([createdAt])
+  @@map("alerts")
+}
+
+model AlertChannel {
+  id           String   @id @default(cuid())
+  orgId        String
+  name         String
+  type         String   // email, webhook, slack, pagerduty
+  config       Json     @default("{}")
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([orgId, name])
+  @@index([orgId])
+  @@index([type])
+  @@map("alert_channels")
+}
