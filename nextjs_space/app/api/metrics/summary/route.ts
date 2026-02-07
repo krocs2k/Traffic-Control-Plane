@@ -87,6 +87,13 @@ export async function GET(request: NextRequest) {
     // Time series for charts (group by hour for 24h+, by minute for 1h)
     const timeSeries = groupMetricsByTime(metrics, timeRange);
 
+    // Convert BigInt values in snapshot to numbers for JSON serialization
+    const serializedSnapshot = latestSnapshot ? {
+      ...latestSnapshot,
+      totalRequests: Number(latestSnapshot.totalRequests),
+      totalErrors: Number(latestSnapshot.totalErrors),
+    } : null;
+
     return NextResponse.json({
       summary: {
         totalRequests,
@@ -96,7 +103,7 @@ export async function GET(request: NextRequest) {
         requestsPerSecond: Math.round(requestsPerSecond * 100) / 100,
         timeRange,
       },
-      latestSnapshot: latestSnapshot || null,
+      latestSnapshot: serializedSnapshot,
       clusterSummary,
       timeSeries,
       lastUpdated: new Date().toISOString(),
