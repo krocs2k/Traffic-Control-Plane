@@ -607,7 +607,7 @@ export default function RoutingPage() {
       </Card>
 
       <Dialog open={policyDialogOpen} onOpenChange={setPolicyDialogOpen}>
-        <DialogContent className="max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{editingPolicy ? 'Edit Policy' : 'New Routing Policy'}</DialogTitle>
             <DialogDescription>
@@ -615,8 +615,8 @@ export default function RoutingPage() {
             </DialogDescription>
           </DialogHeader>
           
-          <div className="flex-1 overflow-hidden">
-            <div className="grid grid-cols-2 gap-4 mb-4">
+          <div className="space-y-4 py-4">
+            <div className="grid grid-cols-2 gap-4">
               <div className="grid gap-2">
                 <Label htmlFor="policy-name">Name</Label>
                 <Input
@@ -649,7 +649,7 @@ export default function RoutingPage() {
               </div>
             </div>
             
-            <div className="grid gap-2 mb-4">
+            <div className="grid gap-2">
               <Label htmlFor="policy-description">Description</Label>
               <Input
                 id="policy-description"
@@ -659,7 +659,7 @@ export default function RoutingPage() {
               />
             </div>
             
-            <div className="grid grid-cols-2 gap-4 mb-4">
+            <div className="grid grid-cols-2 gap-4">
               <div className="grid gap-2">
                 <Label htmlFor="policy-priority">Priority</Label>
                 <Input
@@ -691,7 +691,7 @@ export default function RoutingPage() {
               </div>
             </div>
 
-            <Tabs value={configMode} onValueChange={(v) => setConfigMode(v as 'ai' | 'manual')} className="flex-1">
+            <Tabs value={configMode} onValueChange={(v) => setConfigMode(v as 'ai' | 'manual')}>
               <TabsList className="grid w-full grid-cols-2">
                 <TabsTrigger value="ai" className="flex items-center gap-2">
                   <Wand2 className="h-4 w-4" />
@@ -703,9 +703,9 @@ export default function RoutingPage() {
                 </TabsTrigger>
               </TabsList>
               
-              <TabsContent value="ai" className="mt-4 h-[280px] flex flex-col">
-                <Card className="flex-1 flex flex-col overflow-hidden">
-                  <ScrollArea className="flex-1 p-4">
+              <TabsContent value="ai" className="mt-4">
+                <Card className="border">
+                  <div className="h-[200px] overflow-y-auto p-4">
                     <div className="space-y-4">
                       {chatMessages.map((msg, i) => (
                         <div key={i} className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
@@ -736,7 +736,7 @@ export default function RoutingPage() {
                       )}
                       <div ref={chatEndRef} />
                     </div>
-                  </ScrollArea>
+                  </div>
                   
                   {(extractedJson.conditions || extractedJson.actions) && (
                     <div className="p-3 border-t bg-green-50 dark:bg-green-950">
@@ -783,7 +783,7 @@ export default function RoutingPage() {
                     id="policy-conditions"
                     value={policyForm.conditions}
                     onChange={(e) => setPolicyForm({ ...policyForm, conditions: e.target.value })}
-                    rows={5}
+                    rows={6}
                     className="font-mono text-sm"
                     placeholder='[{"type": "header", "key": "x-canary", "operator": "equals", "value": "true"}]'
                   />
@@ -794,7 +794,7 @@ export default function RoutingPage() {
                     id="policy-actions"
                     value={policyForm.actions}
                     onChange={(e) => setPolicyForm({ ...policyForm, actions: e.target.value })}
-                    rows={5}
+                    rows={6}
                     className="font-mono text-sm"
                     placeholder='{"type": "route", "weight": 10}'
                   />
@@ -803,7 +803,7 @@ export default function RoutingPage() {
             </Tabs>
           </div>
           
-          <DialogFooter className="mt-4">
+          <DialogFooter>
             <Button variant="outline" onClick={() => setPolicyDialogOpen(false)}>Cancel</Button>
             <Button onClick={savePolicy}>Save Policy</Button>
           </DialogFooter>
