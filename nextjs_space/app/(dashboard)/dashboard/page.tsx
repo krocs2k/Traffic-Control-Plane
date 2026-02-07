@@ -2,6 +2,7 @@
 
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import {
   Network,
@@ -12,7 +13,14 @@ import {
   FileText,
   Loader2,
   RefreshCw,
-  Sparkles,
+  FlaskConical,
+  Shuffle,
+  BellRing,
+  AlertTriangle,
+  Zap,
+  Server,
+  HeartPulse,
+  ArrowRight,
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -20,10 +28,31 @@ import { Badge } from '@/components/ui/badge';
 import { ROLE_LABELS, hasPermission, type AuditLogEntry } from '@/lib/types';
 import { formatRelativeTime } from '@/lib/utils';
 
+interface SystemStats {
+  backends: number;
+  healthyBackends: number;
+  activeExperiments: number;
+  activeAlerts: number;
+  circuitBreakers: number;
+  openCircuitBreakers: number;
+  rateLimitRules: number;
+  loadBalancers: number;
+}
+
 export default function DashboardPage() {
   const { data: session, status } = useSession() || {};
   const router = useRouter();
   const [stats, setStats] = useState({ users: 0, orgs: 0, logs: 0 });
+  const [systemStats, setSystemStats] = useState<SystemStats>({
+    backends: 0,
+    healthyBackends: 0,
+    activeExperiments: 0,
+    activeAlerts: 0,
+    circuitBreakers: 0,
+    openCircuitBreakers: 0,
+    rateLimitRules: 0,
+    loadBalancers: 0,
+  });
   const [recentActivity, setRecentActivity] = useState<AuditLogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [resetting, setResetting] = useState(false);
@@ -43,11 +72,18 @@ export default function DashboardPage() {
   const fetchDashboardData = async () => {
     try {
       setLoading(true);
-      const [usersRes, auditRes] = await Promise.all([
+      const orgId = session?.user?.currentOrgId;
+      const [usersRes, auditRes, backendsRes, experimentsRes, alertsRes, circuitBreakersRes, rateLimitsRes, loadBalancersRes] = await Promise.all([
         fetch('/api/users'),
         hasPermission(session?.user?.currentOrgRole ?? 'VIEWER', 'view_audit')
           ? fetch('/api/audit?limit=5')
           : Promise.resolve(null),
+        orgId ? fetch(`/api/backends?orgId=${orgId}`) : Promise.resolve(null),
+        fetch('/api/experiments'),
+        fetch('/api/alerts'),
+        fetch('/api/circuit-breakers'),
+        fetch('/api/rate-limits'),
+        fetch('/api/load-balancing'),
       ]);
 
       if (usersRes?.ok) {
@@ -60,6 +96,53 @@ export default function DashboardPage() {
         setRecentActivity(auditData?.auditLogs ?? []);
         setStats((s) => ({ ...s, logs: auditData?.pagination?.total ?? 0 }));
       }
+
+      // Fetch system stats
+      const newSystemStats: SystemStats = {
+        backends: 0,
+        healthyBackends: 0,
+        activeExperiments: 0,
+        activeAlerts: 0,
+        circuitBreakers: 0,
+        openCircuitBreakers: 0,
+        rateLimitRules: 0,
+        loadBalancers: 0,
+      };
+
+      if (backendsRes && backendsRes?.ok) {
+        const data = await backendsRes.json();
+        const backends = data?.backends ?? [];
+        newSystemStats.backends = backends.length;
+        newSystemStats.healthyBackends = backends.filter((b: { status: string }) => b.status === 'HEALTHY').length;
+      }
+
+      if (experimentsRes?.ok) {
+        const data = await experimentsRes.json();
+        newSystemStats.activeExperiments = (data ?? []).filter((e: { status: string }) => e.status === 'RUNNING').length;
+      }
+
+      if (alertsRes?.ok) {
+        const data = await alertsRes.json();
+        newSystemStats.activeAlerts = (data ?? []).filter((a: { status: string }) => a.status === 'ACTIVE').length;
+      }
+
+      if (circuitBreakersRes?.ok) {
+        const data = await circuitBreakersRes.json();
+        newSystemStats.circuitBreakers = (data ?? []).length;
+        newSystemStats.openCircuitBreakers = (data ?? []).filter((cb: { state: string }) => cb.state === 'OPEN').length;
+      }
+
+      if (rateLimitsRes?.ok) {
+        const data = await rateLimitsRes.json();
+        newSystemStats.rateLimitRules = (data ?? []).filter((r: { isActive: boolean }) => r.isActive).length;
+      }
+
+      if (loadBalancersRes?.ok) {
+        const data = await loadBalancersRes.json();
+        newSystemStats.loadBalancers = (data ?? []).length;
+      }
+
+      setSystemStats(newSystemStats);
     } catch (error) {
       console.error('Failed to fetch dashboard data:', error);
     } finally {
@@ -190,45 +273,107 @@ export default function DashboardPage() {
 
       {/* Main Content */}
       <div className="grid gap-6 lg:grid-cols-2">
-        {/* Coming Soon - Traffic Control Features */}
+        {/* System Overview */}
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <Sparkles className="h-5 w-5 text-primary" />
-              Coming Soon
+              <Server className="h-5 w-5 text-primary" />
+              System Overview
             </CardTitle>
             <CardDescription>
-              Next phase features for the Traffic Control Plane
+              Real-time status of your traffic control infrastructure
             </CardDescription>
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
-              <div className="flex items-start gap-3 p-3 rounded-lg bg-muted/50">
-                <Network className="h-5 w-5 text-primary mt-0.5" />
-                <div>
-                  <h4 className="font-medium">Global Load Balancing</h4>
-                  <p className="text-sm text-muted-foreground">
-                    Route traffic based on location, latency, and health signals
-                  </p>
+              {/* Backends Status */}
+              <Link href="/dashboard/backends" className="block">
+                <div className="flex items-center justify-between p-3 rounded-lg bg-muted/50 hover:bg-muted transition-colors cursor-pointer group">
+                  <div className="flex items-center gap-3">
+                    <HeartPulse className="h-5 w-5 text-green-500" />
+                    <div>
+                      <h4 className="font-medium">Backends</h4>
+                      <p className="text-sm text-muted-foreground">
+                        {systemStats.healthyBackends} healthy of {systemStats.backends} total
+                      </p>
+                    </div>
+                  </div>
+                  <ArrowRight className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors" />
                 </div>
-              </div>
-              <div className="flex items-start gap-3 p-3 rounded-lg bg-muted/50">
-                <Shield className="h-5 w-5 text-primary mt-0.5" />
-                <div>
-                  <h4 className="font-medium">HA Failover</h4>
-                  <p className="text-sm text-muted-foreground">
-                    Automatic failover across regions and providers
-                  </p>
+              </Link>
+
+              {/* Active Experiments */}
+              <Link href="/dashboard/experiments" className="block">
+                <div className="flex items-center justify-between p-3 rounded-lg bg-muted/50 hover:bg-muted transition-colors cursor-pointer group">
+                  <div className="flex items-center gap-3">
+                    <FlaskConical className="h-5 w-5 text-purple-500" />
+                    <div>
+                      <h4 className="font-medium">Experiments</h4>
+                      <p className="text-sm text-muted-foreground">
+                        {systemStats.activeExperiments} running
+                      </p>
+                    </div>
+                  </div>
+                  <ArrowRight className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors" />
                 </div>
-              </div>
-              <div className="flex items-start gap-3 p-3 rounded-lg bg-muted/50">
-                <Activity className="h-5 w-5 text-primary mt-0.5" />
-                <div>
-                  <h4 className="font-medium">AI-Powered Insights</h4>
-                  <p className="text-sm text-muted-foreground">
-                    Anomaly detection, forecasting, and recommendations
-                  </p>
+              </Link>
+
+              {/* Active Alerts */}
+              <Link href="/dashboard/alerts" className="block">
+                <div className="flex items-center justify-between p-3 rounded-lg bg-muted/50 hover:bg-muted transition-colors cursor-pointer group">
+                  <div className="flex items-center gap-3">
+                    <BellRing className={`h-5 w-5 ${systemStats.activeAlerts > 0 ? 'text-red-500' : 'text-muted-foreground'}`} />
+                    <div>
+                      <h4 className="font-medium">Alerts</h4>
+                      <p className="text-sm text-muted-foreground">
+                        {systemStats.activeAlerts > 0 ? (
+                          <span className="text-red-500 font-medium">{systemStats.activeAlerts} active</span>
+                        ) : (
+                          'No active alerts'
+                        )}
+                      </p>
+                    </div>
+                  </div>
+                  <ArrowRight className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors" />
                 </div>
+              </Link>
+
+              {/* Circuit Breakers */}
+              <Link href="/dashboard/traffic-management" className="block">
+                <div className="flex items-center justify-between p-3 rounded-lg bg-muted/50 hover:bg-muted transition-colors cursor-pointer group">
+                  <div className="flex items-center gap-3">
+                    <Zap className={`h-5 w-5 ${systemStats.openCircuitBreakers > 0 ? 'text-yellow-500' : 'text-blue-500'}`} />
+                    <div>
+                      <h4 className="font-medium">Circuit Breakers</h4>
+                      <p className="text-sm text-muted-foreground">
+                        {systemStats.openCircuitBreakers > 0 ? (
+                          <span className="text-yellow-500 font-medium">{systemStats.openCircuitBreakers} open</span>
+                        ) : (
+                          `${systemStats.circuitBreakers} configured, all closed`
+                        )}
+                      </p>
+                    </div>
+                  </div>
+                  <ArrowRight className="h-4 w-4 text-muted-foreground group-hover:text-primary transition-colors" />
+                </div>
+              </Link>
+
+              {/* Load Balancers & Rate Limits */}
+              <div className="grid grid-cols-2 gap-3 pt-2">
+                <Link href="/dashboard/load-balancing" className="block">
+                  <div className="p-3 rounded-lg bg-muted/50 hover:bg-muted transition-colors cursor-pointer text-center">
+                    <Shuffle className="h-5 w-5 mx-auto mb-1 text-cyan-500" />
+                    <p className="text-sm font-medium">{systemStats.loadBalancers}</p>
+                    <p className="text-xs text-muted-foreground">Load Balancers</p>
+                  </div>
+                </Link>
+                <Link href="/dashboard/traffic-management" className="block">
+                  <div className="p-3 rounded-lg bg-muted/50 hover:bg-muted transition-colors cursor-pointer text-center">
+                    <AlertTriangle className="h-5 w-5 mx-auto mb-1 text-orange-500" />
+                    <p className="text-sm font-medium">{systemStats.rateLimitRules}</p>
+                    <p className="text-xs text-muted-foreground">Rate Limit Rules</p>
+                  </div>
+                </Link>
               </div>
             </div>
           </CardContent>
