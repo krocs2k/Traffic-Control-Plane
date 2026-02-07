@@ -1,0 +1,63 @@
+import { prisma } from './db';
+
+export type AuditAction =
+  | 'user.login'
+  | 'user.logout'
+  | 'user.register'
+  | 'user.password_change'
+  | 'user.password_reset_request'
+  | 'user.password_reset'
+  | 'user.profile_update'
+  | 'user.status_change'
+  | 'user.role_change'
+  | 'user.invite'
+  | 'user.remove'
+  | 'org.create'
+  | 'org.update'
+  | 'org.delete'
+  | 'org.switch'
+  | 'session.revoke'
+  | 'session.revoke_all';
+
+export interface AuditDetails {
+  before?: Record<string, unknown>;
+  after?: Record<string, unknown>;
+  targetUserId?: string;
+  targetUserEmail?: string;
+  reason?: string;
+  [key: string]: unknown;
+}
+
+export async function createAuditLog(params: {
+  orgId?: string | null;
+  userId?: string | null;
+  action: AuditAction;
+  resourceType: string;
+  resourceId?: string | null;
+  details?: AuditDetails;
+  ipAddress?: string | null;
+}) {
+  try {
+    await prisma.auditLog.create({
+      data: {
+        orgId: params?.orgId ?? null,
+        userId: params?.userId ?? null,
+        action: params?.action ?? '',
+        resourceType: params?.resourceType ?? '',
+        resourceId: params?.resourceId ?? null,
+        details: (params?.details ?? {}) as any,
+        ipAddress: params?.ipAddress ?? null,
+      },
+    });
+  } catch (error) {
+    console.error('Failed to create audit log:', error);
+  }
+}
+
+export function getClientIP(request: Request): string | null {
+  const forwarded = request?.headers?.get?.('x-forwarded-for');
+  if (forwarded) {
+    return forwarded?.split?.(',')?.shift?.()?.trim?.() ?? null;
+  }
+  return request?.headers?.get?.('x-real-ip') ?? null;
+}

@@ -1,0 +1,138 @@
+generator client {
+    provider = "prisma-client-js"
+    binaryTargets = ["native", "linux-musl-arm64-openssl-3.0.x"]
+    output = "/home/ubuntu/traffic-control-plane/nextjs_space/node_modules/.prisma/client"
+}
+
+datasource db {
+    provider = "postgresql"
+    url      = env("DATABASE_URL")
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  OPERATOR
+  VIEWER
+  AUDITOR
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  PENDING
+}
+
+model Organization {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  settings    Json     @default("{}")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  members     OrganizationMember[]
+  invites     OrganizationInvite[]
+  auditLogs   AuditLog[]
+
+  @@map("organizations")
+}
+
+model User {
+  id           String     @id @default(cuid())
+  email        String     @unique
+  passwordHash String
+  name         String
+  avatarUrl    String?
+  mfaEnabled   Boolean    @default(false)
+  mfaSecret    String?
+  status       UserStatus @default(ACTIVE)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  memberships       OrganizationMember[]
+  sessions          Session[]
+  auditLogs         AuditLog[]
+  passwordResets    PasswordResetToken[]
+  invitesSent       OrganizationMember[] @relation("InvitedBy")
+  inviteTokens      OrganizationInvite[]
+
+  @@map("users")
+}
+
+model OrganizationMember {
+  id           String   @id @default(cuid())
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  orgId        String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId       String
+  role         Role     @default(VIEWER)
+  invitedBy    User?    @relation("InvitedBy", fields: [invitedById], references: [id])
+  invitedById  String?
+  joinedAt     DateTime @default(now())
+
+  @@unique([orgId, userId])
+  @@map("organization_members")
+}
+
+model OrganizationInvite {
+  id           String       @id @default(cuid())
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  orgId        String
+  email        String
+  role         Role         @default(VIEWER)
+  token        String       @unique
+  invitedBy    User         @relation(fields: [invitedById], references: [id])
+  invitedById  String
+  expiresAt    DateTime
+  usedAt       DateTime?
+  createdAt    DateTime     @default(now())
+
+  @@unique([orgId, email])
+  @@map("organization_invites")
+}
+
+model Session {
+  id          String   @id @default(cuid())
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId      String
+  token       String   @unique
+  expiresAt   DateTime
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime @default(now())
+
+  @@map("sessions")
+}
+
+model AuditLog {
+  id           String       @id @default(cuid())
+  organization Organization? @relation(fields: [orgId], references: [id], onDelete: SetNull)
+  orgId        String?
+  user         User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+  userId       String?
+  action       String
+  resourceType String
+  resourceId   String?
+  details      Json         @default("{}")
+  ipAddress    String?
+  createdAt    DateTime     @default(now())
+
+  @@index([orgId])
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  token     String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@map("password_reset_tokens")
+}
