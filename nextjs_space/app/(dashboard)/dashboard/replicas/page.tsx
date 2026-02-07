@@ -353,7 +353,8 @@ export default function ReplicasPage() {
           {replicas.map(replica => (
             <Card
               key={replica.id}
-              className={`transition-all ${selectedReplica?.id === replica.id ? 'ring-2 ring-primary' : ''}`}
+              className={`transition-all cursor-pointer hover:shadow-md ${selectedReplica?.id === replica.id ? 'ring-2 ring-primary' : ''}`}
+              onClick={() => setSelectedReplica(selectedReplica?.id === replica.id ? null : replica)}
             >
               <CardHeader className="pb-2">
                 <div className="flex items-center justify-between">
@@ -364,7 +365,7 @@ export default function ReplicasPage() {
                   {canManage && (
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon" className="h-8 w-8">
+                        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={(e) => e.stopPropagation()}>
                           <MoreVertical className="h-4 w-4" />
                         </Button>
                       </DropdownMenuTrigger>
@@ -430,6 +431,47 @@ export default function ReplicasPage() {
             </Card>
           ))}
         </div>
+      )}
+
+      {selectedReplica && (
+        <Card className="border-primary">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base flex items-center gap-2">
+              <CheckCircle2 className="h-5 w-5 text-primary" />
+              Selected Replica: {selectedReplica.name}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+              <div>
+                <span className="text-muted-foreground">Host:</span>
+                <p className="font-medium">{selectedReplica.host}:{selectedReplica.port}</p>
+              </div>
+              <div>
+                <span className="text-muted-foreground">Region:</span>
+                <p className="font-medium">{selectedReplica.region || 'N/A'}</p>
+              </div>
+              <div>
+                <span className="text-muted-foreground">Status:</span>
+                <Badge className={`ml-1 ${STATUS_COLORS[selectedReplica.status as keyof typeof STATUS_COLORS]}`}>
+                  {STATUS_LABELS[selectedReplica.status as keyof typeof STATUS_LABELS] || selectedReplica.status}
+                </Badge>
+              </div>
+              <div>
+                <span className="text-muted-foreground">Current Lag:</span>
+                <p className="font-medium">{formatLag(selectedReplica.currentLagMs)}</p>
+              </div>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-4"
+              onClick={() => setSelectedReplica(null)}
+            >
+              Clear Selection
+            </Button>
+          </CardContent>
+        </Card>
       )}
 
       <Dialog open={replicaDialogOpen} onOpenChange={setReplicaDialogOpen}>
