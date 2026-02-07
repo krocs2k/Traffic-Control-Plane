@@ -71,3 +71,14 @@ export async function requireOrgMembership(orgId: string, userId: string): Promi
   if (!membership) return null;
   return { role: membership?.role ?? 'VIEWER' };
 }
+
+export async function checkPermission(userId: string, orgId: string, permission: string): Promise<boolean> {
+  const membership = await prisma.organizationMember.findUnique({
+    where: {
+      orgId_userId: { orgId, userId },
+    },
+  });
+  
+  if (!membership) return false;
+  return hasPermission(membership.role, permission);
+}

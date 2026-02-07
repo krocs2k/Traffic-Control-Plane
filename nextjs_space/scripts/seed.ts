@@ -1,4 +1,4 @@
-import { PrismaClient, Role } from '@prisma/client';
+import { PrismaClient, Role, BackendStatus, LoadBalancerStrategy, RoutingPolicyType, ReplicaStatus } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
@@ -267,6 +267,236 @@ async function main() {
   });
 
   console.log('Created audit log entries');
+
+  // ============================================
+  // Traffic Control Demo Data
+  // ============================================
+
+  // Create Backend Clusters for Acme Corp
+  const productionCluster = await prisma.backendCluster.upsert({
+    where: { orgId_name: { orgId: acmeCorp.id, name: 'production-api' } },
+    update: {},
+    create: {
+      orgId: acmeCorp.id,
+      name: 'production-api',
+      description: 'Production API servers with round-robin load balancing',
+      strategy: LoadBalancerStrategy.ROUND_ROBIN,
+      healthCheck: { path: '/health', intervalMs: 30000, timeoutMs: 5000, unhealthyThreshold: 3 },
+      isActive: true,
+    },
+  });
+
+  const canaryCluster = await prisma.backendCluster.upsert({
+    where: { orgId_name: { orgId: acmeCorp.id, name: 'canary-api' } },
+    update: {},
+    create: {
+      orgId: acmeCorp.id,
+      name: 'canary-api',
+      description: 'Canary deployment for testing new releases',
+      strategy: LoadBalancerStrategy.WEIGHTED_ROUND_ROBIN,
+      healthCheck: { path: '/health', intervalMs: 15000, timeoutMs: 3000, unhealthyThreshold: 2 },
+      isActive: true,
+    },
+  });
+
+  const stagingCluster = await prisma.backendCluster.upsert({
+    where: { orgId_name: { orgId: acmeCorp.id, name: 'staging-api' } },
+    update: {},
+    create: {
+      orgId: acmeCorp.id,
+      name: 'staging-api',
+      description: 'Staging environment for QA testing',
+      strategy: LoadBalancerStrategy.LEAST_CONNECTIONS,
+      isActive: true,
+    },
+  });
+
+  console.log('Created backend clusters');
+
+  // Create Backends for Production Cluster
+  const backends = [
+    { clusterId: productionCluster.id, name: 'prod-api-1', host: 'api-1.acme-prod.internal', port: 443, weight: 100, status: BackendStatus.HEALTHY },
+    { clusterId: productionCluster.id, name: 'prod-api-2', host: 'api-2.acme-prod.internal', port: 443, weight: 100, status: BackendStatus.HEALTHY },
+    { clusterId: productionCluster.id, name: 'prod-api-3', host: 'api-3.acme-prod.internal', port: 443, weight: 100, status: BackendStatus.HEALTHY },
+    { clusterId: productionCluster.id, name: 'prod-api-4', host: 'api-4.acme-prod.internal', port: 443, weight: 50, status: BackendStatus.DRAINING },
+    { clusterId: canaryCluster.id, name: 'canary-api-1', host: 'canary-1.acme-prod.internal', port: 443, weight: 100, status: BackendStatus.HEALTHY },
+    { clusterId: canaryCluster.id, name: 'canary-api-2', host: 'canary-2.acme-prod.internal', port: 443, weight: 100, status: BackendStatus.HEALTHY },
+    { clusterId: stagingCluster.id, name: 'staging-api-1', host: 'api-1.acme-staging.internal', port: 443, weight: 100, status: BackendStatus.HEALTHY },
+    { clusterId: stagingCluster.id, name: 'staging-api-2', host: 'api-2.acme-staging.internal', port: 443, weight: 100, status: BackendStatus.MAINTENANCE },
+  ];
+
+  for (const backend of backends) {
+    await prisma.backend.upsert({
+      where: { id: `${backend.clusterId}-${backend.name}` },
+      update: { status: backend.status, weight: backend.weight },
+      create: {
+        clusterId: backend.clusterId,
+        name: backend.name,
+        host: backend.host,
+        port: backend.port,
+        protocol: 'https',
+        weight: backend.weight,
+        status: backend.status,
+        healthCheckPath: '/health',
+        maxConnections: 1000,
+        currentConnections: Math.floor(Math.random() * 200),
+        tags: ['production'],
+        isActive: true,
+      },
+    });
+  }
+
+  console.log('Created backends');
+
+  // Create Routing Policies for Acme Corp
+  const policies = [
+    {
+      orgId: acmeCorp.id,
+      name: 'canary-release-v2',
+      description: 'Route 10% of traffic to canary for v2.0 release testing',
+      type: RoutingPolicyType.CANARY,
+      priority: 10,
+      clusterId: canaryCluster.id,
+      conditions: [{ type: 'percentage', operator: 'lt', value: 10 }],
+      actions: { type: 'route', target: 'canary-api' },
+      isActive: true,
+    },
+    {
+      orgId: acmeCorp.id,
+      name: 'beta-users',
+      description: 'Route beta users to canary based on header',
+      type: RoutingPolicyType.HEADER_BASED,
+      priority: 5,
+      clusterId: canaryCluster.id,
+      conditions: [{ type: 'header', key: 'X-Beta-User', operator: 'equals', value: 'true' }],
+      actions: { type: 'route', target: 'canary-api' },
+      isActive: true,
+    },
+    {
+      orgId: acmeCorp.id,
+      name: 'geo-routing-eu',
+      description: 'Route EU traffic to EU backends',
+      type: RoutingPolicyType.GEOGRAPHIC,
+      priority: 20,
+      clusterId: productionCluster.id,
+      conditions: [{ type: 'geo', key: 'region', operator: 'in', value: ['EU', 'Europe'] }],
+      actions: { type: 'route', addHeaders: { 'X-Region': 'EU' } },
+      isActive: true,
+    },
+    {
+      orgId: acmeCorp.id,
+      name: 'api-v1-routing',
+      description: 'Route /api/v1/* paths to production',
+      type: RoutingPolicyType.PATH_BASED,
+      priority: 50,
+      clusterId: productionCluster.id,
+      conditions: [{ type: 'path', operator: 'regex', value: '^/api/v1/.*' }],
+      actions: { type: 'route', target: 'production-api' },
+      isActive: true,
+    },
+    {
+      orgId: acmeCorp.id,
+      name: 'failover-policy',
+      description: 'Automatic failover to backup cluster',
+      type: RoutingPolicyType.FAILOVER,
+      priority: 100,
+      clusterId: productionCluster.id,
+      conditions: [],
+      actions: { type: 'failover', primary: 'production-api', backup: 'staging-api' },
+      isActive: false,
+    },
+    {
+      orgId: acmeCorp.id,
+      name: 'weighted-ab-test',
+      description: '80/20 A/B test split',
+      type: RoutingPolicyType.WEIGHTED,
+      priority: 30,
+      clusterId: productionCluster.id,
+      conditions: [{ type: 'header', key: 'X-AB-Test', operator: 'equals', value: 'enabled' }],
+      actions: { type: 'weighted', weights: { A: 80, B: 20 } },
+      isActive: true,
+    },
+  ];
+
+  for (const policy of policies) {
+    await prisma.routingPolicy.upsert({
+      where: { orgId_name: { orgId: policy.orgId, name: policy.name } },
+      update: { isActive: policy.isActive, priority: policy.priority },
+      create: policy,
+    });
+  }
+
+  console.log('Created routing policies');
+
+  // Create Read Replicas for Acme Corp
+  const replicas = [
+    { orgId: acmeCorp.id, name: 'replica-us-east-1', host: 'replica-1.db.acme.internal', port: 5432, region: 'us-east-1', maxAcceptableLagMs: 1000, currentLagMs: 45, status: ReplicaStatus.SYNCED },
+    { orgId: acmeCorp.id, name: 'replica-us-west-2', host: 'replica-2.db.acme.internal', port: 5432, region: 'us-west-2', maxAcceptableLagMs: 1000, currentLagMs: 120, status: ReplicaStatus.SYNCED },
+    { orgId: acmeCorp.id, name: 'replica-eu-west-1', host: 'replica-3.db.acme.internal', port: 5432, region: 'eu-west-1', maxAcceptableLagMs: 2000, currentLagMs: 850, status: ReplicaStatus.LAGGING },
+    { orgId: acmeCorp.id, name: 'replica-ap-southeast-1', host: 'replica-4.db.acme.internal', port: 5432, region: 'ap-southeast-1', maxAcceptableLagMs: 3000, currentLagMs: 2100, status: ReplicaStatus.CATCHING_UP },
+  ];
+
+  for (const replica of replicas) {
+    const created = await prisma.readReplica.upsert({
+      where: { orgId_name: { orgId: replica.orgId, name: replica.name } },
+      update: { currentLagMs: replica.currentLagMs, status: replica.status },
+      create: {
+        ...replica,
+        lastHealthCheck: new Date(),
+        isActive: true,
+      },
+    });
+
+    // Add some lag metrics history
+    const now = Date.now();
+    for (let i = 0; i < 10; i++) {
+      await prisma.lagMetric.create({
+        data: {
+          replicaId: created.id,
+          lagMs: replica.currentLagMs + Math.floor(Math.random() * 100) - 50,
+          recordedAt: new Date(now - i * 60000), // Every minute for last 10 mins
+        },
+      });
+    }
+  }
+
+  console.log('Created read replicas with lag metrics');
+
+  // Add more audit logs for traffic control actions
+  await prisma.auditLog.createMany({
+    data: [
+      {
+        orgId: acmeCorp.id,
+        userId: testUser.id,
+        action: 'backend_cluster.create',
+        resourceType: 'backend_cluster',
+        resourceId: productionCluster.id,
+        details: { name: 'production-api', strategy: 'ROUND_ROBIN' },
+      },
+      {
+        orgId: acmeCorp.id,
+        userId: alice.id,
+        action: 'routing_policy.create',
+        resourceType: 'routing_policy',
+        details: { name: 'canary-release-v2', type: 'CANARY' },
+      },
+      {
+        orgId: acmeCorp.id,
+        userId: bob.id,
+        action: 'backend.update',
+        resourceType: 'backend',
+        details: { name: 'prod-api-4', status: 'DRAINING' },
+      },
+      {
+        orgId: acmeCorp.id,
+        userId: alice.id,
+        action: 'read_replica.create',
+        resourceType: 'read_replica',
+        details: { name: 'replica-us-east-1', region: 'us-east-1' },
+      },
+    ],
+  });
+
   console.log('\nSeeding completed successfully!');
   console.log('\nDemo Organizations:');
   console.log('  - Acme Corp (acme-corp)');
@@ -277,6 +507,10 @@ async function main() {
   console.log('  - carol@techstart.com (Owner at TechStart Inc)');
   console.log('  - dave@techstart.com (Viewer at TechStart Inc)');
   console.log('  - eve@external.com (Auditor at Acme Corp)');
+  console.log('\nTraffic Control Demo Data:');
+  console.log('  Backend Clusters: production-api, canary-api, staging-api');
+  console.log('  Routing Policies: canary-release-v2, beta-users, geo-routing-eu, and more');
+  console.log('  Read Replicas: us-east-1, us-west-2, eu-west-1, ap-southeast-1');
 }
 
 main()

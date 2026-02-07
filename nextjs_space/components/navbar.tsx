@@ -16,6 +16,9 @@ import {
   Moon,
   Sun,
   LayoutDashboard,
+  Route,
+  Server,
+  Database,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
@@ -103,6 +106,10 @@ export function Navbar() {
   const userRole = session?.user?.currentOrgRole ?? 'VIEWER';
   const canManageUsers = hasPermission(userRole, 'manage_users');
   const canViewAudit = hasPermission(userRole, 'view_audit');
+  const canViewResources = hasPermission(userRole, 'view_resources');
+  const canManageBackends = hasPermission(userRole, 'manage_backends');
+  const canManageRouting = hasPermission(userRole, 'manage_routing');
+  const canManageReplicas = hasPermission(userRole, 'manage_replicas');
 
   return (
     <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -120,6 +127,30 @@ export function Navbar() {
                 Dashboard
               </Link>
             </Button>
+            {(canViewResources || canManageBackends) && (
+              <Button variant="ghost" size="sm" asChild>
+                <Link href="/dashboard/backends">
+                  <Server className="h-4 w-4 mr-2" />
+                  Backends
+                </Link>
+              </Button>
+            )}
+            {(canViewResources || canManageRouting) && (
+              <Button variant="ghost" size="sm" asChild>
+                <Link href="/dashboard/routing">
+                  <Route className="h-4 w-4 mr-2" />
+                  Routing
+                </Link>
+              </Button>
+            )}
+            {(canViewResources || canManageReplicas) && (
+              <Button variant="ghost" size="sm" asChild>
+                <Link href="/dashboard/replicas">
+                  <Database className="h-4 w-4 mr-2" />
+                  Replicas
+                </Link>
+              </Button>
+            )}
             {canManageUsers && (
               <Button variant="ghost" size="sm" asChild>
                 <Link href="/users">

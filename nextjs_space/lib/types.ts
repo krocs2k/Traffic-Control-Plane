@@ -55,8 +55,8 @@ export interface OrganizationMemberInfo {
 
 export const ROLE_PERMISSIONS: Record<Role, string[]> = {
   OWNER: ['*'],
-  ADMIN: ['manage_users', 'manage_settings', 'view_audit', 'manage_resources', 'view_resources'],
-  OPERATOR: ['manage_resources', 'view_resources', 'view_audit'],
+  ADMIN: ['manage_users', 'manage_settings', 'view_audit', 'manage_resources', 'view_resources', 'manage_backends', 'manage_routing', 'manage_replicas'],
+  OPERATOR: ['manage_resources', 'view_resources', 'view_audit', 'manage_backends', 'manage_routing', 'manage_replicas'],
   VIEWER: ['view_resources'],
   AUDITOR: ['view_resources', 'view_audit'],
 };

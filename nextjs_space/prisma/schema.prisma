@@ -31,9 +31,12 @@ model Organization {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  members     OrganizationMember[]
-  invites     OrganizationInvite[]
-  auditLogs   AuditLog[]
+  members         OrganizationMember[]
+  invites         OrganizationInvite[]
+  auditLogs       AuditLog[]
+  backendClusters BackendCluster[]
+  routingPolicies RoutingPolicy[]
+  readReplicas    ReadReplica[]
 
   @@map("organizations")
 }
@@ -137,4 +140,157 @@ model PasswordResetToken {
   createdAt DateTime  @default(now())
 
   @@map("password_reset_tokens")
+}
+
+// ============================================
+// Traffic Control - Backends & Routing
+// ============================================
+
+enum BackendStatus {
+  HEALTHY
+  UNHEALTHY
+  DRAINING
+  MAINTENANCE
+}
+
+enum RoutingPolicyType {
+  WEIGHTED
+  CANARY
+  BLUE_GREEN
+  GEOGRAPHIC
+  HEADER_BASED
+  PATH_BASED
+  FAILOVER
+}
+
+enum LoadBalancerStrategy {
+  ROUND_ROBIN
+  LEAST_CONNECTIONS
+  RANDOM
+  IP_HASH
+  WEIGHTED_ROUND_ROBIN
+}
+
+model BackendCluster {
+  id           String              @id @default(cuid())
+  organization Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  orgId        String
+  name         String
+  description  String?
+  strategy     LoadBalancerStrategy @default(ROUND_ROBIN)
+  healthCheck  Json                @default("{\"path\": \"/health\", \"intervalMs\": 30000, \"timeoutMs\": 5000, \"unhealthyThreshold\": 3}")
+  isActive     Boolean             @default(true)
+  metadata     Json                @default("{}")
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  backends        Backend[]
+  routingPolicies RoutingPolicy[]
+
+  @@unique([orgId, name])
+  @@index([orgId])
+  @@map("backend_clusters")
+}
+
+model Backend {
+  id           String        @id @default(cuid())
+  cluster      BackendCluster @relation(fields: [clusterId], references: [id], onDelete: Cascade)
+  clusterId    String
+  name         String
+  host         String
+  port         Int           @default(443)
+  protocol     String        @default("https")
+  weight       Int           @default(100)
+  status       BackendStatus @default(HEALTHY)
+  maxConnections Int?
+  currentConnections Int     @default(0)
+  lastHealthCheck DateTime?
+  healthCheckPath String     @default("/health")
+  tags         String[]      @default([])
+  metadata     Json          @default("{}")
+  isActive     Boolean       @default(true)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  lagMetrics   LagMetric[]
+
+  @@index([clusterId])
+  @@index([status])
+  @@map("backends")
+}
+
+model RoutingPolicy {
+  id           String            @id @default(cuid())
+  organization Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  orgId        String
+  cluster      BackendCluster?   @relation(fields: [clusterId], references: [id], onDelete: SetNull)
+  clusterId    String?
+  name         String
+  description  String?
+  type         RoutingPolicyType @default(WEIGHTED)
+  priority     Int               @default(100)
+  conditions   Json              @default("[]")
+  actions      Json              @default("{}")
+  isActive     Boolean           @default(true)
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  @@unique([orgId, name])
+  @@index([orgId])
+  @@index([type])
+  @@index([isActive])
+  @@map("routing_policies")
+}
+
+// ============================================
+// Lag-Aware Reads
+// ============================================
+
+enum ReplicaStatus {
+  SYNCED
+  LAGGING
+  CATCHING_UP
+  OFFLINE
+}
+
+model ReadReplica {
+  id              String        @id @default(cuid())
+  organization    Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  orgId           String
+  name            String
+  host            String
+  port            Int           @default(5432)
+  region          String?
+  maxAcceptableLagMs Int        @default(1000)
+  currentLagMs    Int           @default(0)
+  status          ReplicaStatus @default(SYNCED)
+  lastHealthCheck DateTime?
+  isActive        Boolean       @default(true)
+  metadata        Json          @default("{}")
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  lagMetrics      LagMetric[]
+
+  @@unique([orgId, name])
+  @@index([orgId])
+  @@index([status])
+  @@map("read_replicas")
+}
+
+model LagMetric {
+  id          String       @id @default(cuid())
+  replica     ReadReplica? @relation(fields: [replicaId], references: [id], onDelete: Cascade)
+  replicaId   String?
+  backend     Backend?     @relation(fields: [backendId], references: [id], onDelete: Cascade)
+  backendId   String?
+  lagMs       Int
+  bytesLag    BigInt?
+  transactionsLag Int?
+  recordedAt  DateTime     @default(now())
+
+  @@index([replicaId])
+  @@index([backendId])
+  @@index([recordedAt])
+  @@map("lag_metrics")
 }

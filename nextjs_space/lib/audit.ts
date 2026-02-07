@@ -21,7 +21,20 @@ export type AuditAction =
   | 'MFA_SETUP_INITIATED'
   | 'MFA_ENABLED'
   | 'MFA_DISABLED'
-  | 'MFA_BACKUP_CODES_REGENERATED';
+  | 'MFA_BACKUP_CODES_REGENERATED'
+  // Traffic Control Actions
+  | 'backend_cluster.create'
+  | 'backend_cluster.update'
+  | 'backend_cluster.delete'
+  | 'backend.create'
+  | 'backend.update'
+  | 'backend.delete'
+  | 'routing_policy.create'
+  | 'routing_policy.update'
+  | 'routing_policy.delete'
+  | 'read_replica.create'
+  | 'read_replica.update'
+  | 'read_replica.delete';
 
 export interface AuditDetails {
   before?: Record<string, unknown>;
