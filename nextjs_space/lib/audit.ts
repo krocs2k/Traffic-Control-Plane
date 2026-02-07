@@ -34,7 +34,11 @@ export type AuditAction =
   | 'routing_policy.delete'
   | 'read_replica.create'
   | 'read_replica.update'
-  | 'read_replica.delete';
+  | 'read_replica.delete'
+  // Recommendation Actions
+  | 'recommendation.accepted'
+  | 'recommendation.rejected'
+  | 'recommendation.expired';
 
 export interface AuditDetails {
   before?: Record<string, unknown>;

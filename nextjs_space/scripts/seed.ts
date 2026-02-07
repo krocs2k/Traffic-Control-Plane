@@ -1,4 +1,4 @@
-import { PrismaClient, Role, BackendStatus, LoadBalancerStrategy, RoutingPolicyType, ReplicaStatus } from '@prisma/client';
+import { PrismaClient, Role, BackendStatus, LoadBalancerStrategy, RoutingPolicyType, ReplicaStatus, NotificationType, NotificationSeverity, RecommendationCategory, RecommendationStatus } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
@@ -493,6 +493,130 @@ async function main() {
         action: 'read_replica.create',
         resourceType: 'read_replica',
         details: { name: 'replica-us-east-1', region: 'us-east-1' },
+      },
+    ],
+  });
+
+  // Create Notifications
+  console.log('Creating notifications...');
+  await prisma.notification.deleteMany({ where: { orgId: acmeCorp.id } });
+  await prisma.notification.createMany({
+    data: [
+      {
+        orgId: acmeCorp.id,
+        type: 'BACKEND_HEALTH',
+        severity: 'WARNING',
+        title: 'Backend Server High Latency',
+        message: 'prod-api-2 is experiencing higher than normal latency (250ms avg). Consider investigating or scaling.',
+        resourceType: 'backend',
+        isRead: false,
+      },
+      {
+        orgId: acmeCorp.id,
+        type: 'REPLICA_LAG',
+        severity: 'ERROR',
+        title: 'Read Replica Lagging',
+        message: 'replica-eu-west-1 has exceeded the maximum acceptable lag threshold (1500ms > 1000ms).',
+        resourceType: 'replica',
+        isRead: false,
+      },
+      {
+        orgId: acmeCorp.id,
+        type: 'POLICY_CHANGE',
+        severity: 'INFO',
+        title: 'Routing Policy Updated',
+        message: 'The canary-release-v2 routing policy was updated by alice@acme.com.',
+        resourceType: 'policy',
+        isRead: true,
+      },
+      {
+        orgId: acmeCorp.id,
+        type: 'SECURITY',
+        severity: 'WARNING',
+        title: 'Multiple Failed Login Attempts',
+        message: 'Detected 5 failed login attempts for user bob@acme.com from IP 192.168.1.100.',
+        resourceType: 'user',
+        isRead: false,
+      },
+      {
+        orgId: acmeCorp.id,
+        type: 'SYSTEM',
+        severity: 'INFO',
+        title: 'Scheduled Maintenance',
+        message: 'System maintenance scheduled for Saturday 2AM-4AM UTC. Expect brief interruptions.',
+        isRead: true,
+      },
+      {
+        orgId: acmeCorp.id,
+        type: 'BACKEND_HEALTH',
+        severity: 'CRITICAL',
+        title: 'Backend Server Offline',
+        message: 'prod-api-4 has failed health checks and is marked as DRAINING. Traffic is being rerouted.',
+        resourceType: 'backend',
+        isRead: false,
+      },
+    ],
+  });
+
+  // Create Recommendations
+  console.log('Creating recommendations...');
+  await prisma.recommendation.deleteMany({ where: { orgId: acmeCorp.id } });
+  await prisma.recommendation.createMany({
+    data: [
+      {
+        orgId: acmeCorp.id,
+        category: 'PERFORMANCE',
+        title: 'Enable Connection Pooling',
+        description: 'Your backend servers are handling a high number of short-lived connections. Enabling connection pooling could reduce overhead and improve response times by 15-20%.',
+        impact: 'Potential 15-20% latency reduction',
+        confidence: 0.85,
+        resourceType: 'cluster',
+        suggestedAction: { type: 'enable_pooling', maxConnections: 100 },
+        status: 'PENDING',
+      },
+      {
+        orgId: acmeCorp.id,
+        category: 'RELIABILITY',
+        title: 'Add Read Replica in Asia Pacific',
+        description: 'Traffic analysis shows increasing requests from APAC region. Adding a read replica in ap-northeast-1 would reduce latency for 23% of your read traffic.',
+        impact: 'Reduce APAC read latency by 60%',
+        confidence: 0.92,
+        resourceType: 'replica',
+        suggestedAction: { type: 'create_replica', region: 'ap-northeast-1' },
+        status: 'PENDING',
+      },
+      {
+        orgId: acmeCorp.id,
+        category: 'COST',
+        title: 'Consolidate Staging Backends',
+        description: 'The staging-api cluster has 3 backends but averages only 5% utilization. Consider reducing to 1 backend to save resources.',
+        impact: 'Estimated 66% cost reduction for staging',
+        confidence: 0.78,
+        resourceType: 'cluster',
+        suggestedAction: { type: 'scale_down', targetCount: 1 },
+        status: 'PENDING',
+      },
+      {
+        orgId: acmeCorp.id,
+        category: 'CONFIGURATION',
+        title: 'Optimize Health Check Intervals',
+        description: 'Current health check interval (30s) may be too slow to detect failures promptly. Consider reducing to 10s for production backends.',
+        impact: 'Faster failure detection',
+        confidence: 0.88,
+        resourceType: 'cluster',
+        suggestedAction: { type: 'update_health_check', intervalMs: 10000 },
+        status: 'PENDING',
+      },
+      {
+        orgId: acmeCorp.id,
+        category: 'SECURITY',
+        title: 'Enable Rate Limiting on API Routes',
+        description: 'Your path-based routing policy /api/v1 lacks rate limiting. This could expose your service to abuse or DDoS attacks.',
+        impact: 'Improved security posture',
+        confidence: 0.95,
+        resourceType: 'policy',
+        suggestedAction: { type: 'add_rate_limit', requests: 100, window: '1m' },
+        status: 'PENDING',
       },
     ],
   });

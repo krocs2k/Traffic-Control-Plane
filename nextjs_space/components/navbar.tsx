@@ -19,6 +19,7 @@ import {
   Route,
   Server,
   Database,
+  Bell,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
@@ -47,12 +48,34 @@ export function Navbar() {
   const { theme, setTheme } = useTheme();
   const [orgs, setOrgs] = useState<Organization[]>([]);
   const [currentOrg, setCurrentOrg] = useState<Organization | null>(null);
+  const [unreadNotifications, setUnreadNotifications] = useState(0);
 
   useEffect(() => {
     if (session?.user?.id) {
       fetchOrganizations();
     }
   }, [session?.user?.id]);
+
+  useEffect(() => {
+    if (session?.user?.currentOrgId) {
+      fetchUnreadCount();
+      // Poll for new notifications every 30 seconds
+      const interval = setInterval(fetchUnreadCount, 30000);
+      return () => clearInterval(interval);
+    }
+  }, [session?.user?.currentOrgId]);
+
+  const fetchUnreadCount = async () => {
+    try {
+      const res = await fetch(`/api/notifications?orgId=${session?.user?.currentOrgId}&unreadOnly=true&limit=1`);
+      if (res?.ok) {
+        const data = await res?.json?.();
+        setUnreadNotifications(data?.unreadCount ?? 0);
+      }
+    } catch (error) {
+      // Silent fail for notification count
+    }
+  };
 
   useEffect(() => {
     if (orgs?.length > 0 && session?.user?.currentOrgId) {
@@ -201,6 +224,24 @@ export function Navbar() {
               </DropdownMenuContent>
             </DropdownMenu>
           )}
+
+          {/* Notifications */}
+          <Button
+            variant="ghost"
+            size="icon"
+            asChild
+            className="relative"
+          >
+            <Link href="/dashboard/notifications">
+              <Bell className="h-4 w-4" />
+              {unreadNotifications > 0 && (
+                <span className="absolute -top-1 -right-1 h-4 w-4 rounded-full bg-red-500 text-[10px] font-medium text-white flex items-center justify-center">
+                  {unreadNotifications > 9 ? '9+' : unreadNotifications}
+                </span>
+              )}
+              <span className="sr-only">Notifications</span>
+            </Link>
+          </Button>
 
           {/* Theme Toggle */}
           <Button

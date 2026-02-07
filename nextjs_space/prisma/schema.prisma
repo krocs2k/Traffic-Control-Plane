@@ -37,6 +37,8 @@ model Organization {
   backendClusters BackendCluster[]
   routingPolicies RoutingPolicy[]
   readReplicas    ReadReplica[]
+  notifications   Notification[]
+  recommendations Recommendation[]
 
   @@map("organizations")
 }
@@ -293,4 +295,88 @@ model LagMetric {
   @@index([backendId])
   @@index([recordedAt])
   @@map("lag_metrics")
+}
+
+// ============================================
+// Notifications & Recommendations
+// ============================================
+
+enum NotificationType {
+  BACKEND_HEALTH
+  REPLICA_LAG
+  POLICY_CHANGE
+  SECURITY
+  SYSTEM
+  RECOMMENDATION
+}
+
+enum NotificationSeverity {
+  INFO
+  WARNING
+  ERROR
+  CRITICAL
+}
+
+model Notification {
+  id           String               @id @default(cuid())
+  organization Organization         @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  orgId        String
+  type         NotificationType
+  severity     NotificationSeverity @default(INFO)
+  title        String
+  message      String
+  resourceType String?
+  resourceId   String?
+  metadata     Json                 @default("{}")
+  isRead       Boolean              @default(false)
+  isDismissed  Boolean              @default(false)
+  createdAt    DateTime             @default(now())
+  expiresAt    DateTime?
+
+  @@index([orgId])
+  @@index([type])
+  @@index([severity])
+  @@index([isRead])
+  @@index([createdAt])
+  @@map("notifications")
+}
+
+enum RecommendationStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  EXPIRED
+}
+
+enum RecommendationCategory {
+  PERFORMANCE
+  RELIABILITY
+  COST
+  SECURITY
+  CONFIGURATION
+}
+
+model Recommendation {
+  id           String                 @id @default(cuid())
+  organization Organization           @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  orgId        String
+  category     RecommendationCategory
+  title        String
+  description  String
+  impact       String?
+  suggestedAction Json               @default("{}")
+  resourceType String?
+  resourceId   String?
+  confidence   Float                 @default(0.8)
+  status       RecommendationStatus  @default(PENDING)
+  metadata     Json                  @default("{}")
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+  expiresAt    DateTime?
+
+  @@index([orgId])
+  @@index([category])
+  @@index([status])
+  @@index([createdAt])
+  @@map("recommendations")
 }
