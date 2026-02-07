@@ -24,8 +24,9 @@ export async function POST(request: Request) {
     });
 
     // Always return success to prevent email enumeration
+    // But include mfaRequired hint (this is safe since they already have the email)
     if (!user) {
-      return NextResponse.json({ success: true });
+      return NextResponse.json({ success: true, mfaRequired: false });
     }
 
     // Invalidate any existing tokens
@@ -58,7 +59,7 @@ export async function POST(request: Request) {
       action: 'user.password_reset_request',
       resourceType: 'user',
       resourceId: user?.id,
-      details: { email: normalizedEmail },
+      details: { email: normalizedEmail, mfaEnabled: user.mfaEnabled },
       ipAddress,
     });
 
@@ -67,7 +68,10 @@ export async function POST(request: Request) {
     console.log(`Password reset token for ${normalizedEmail}: ${token}`);
     console.log(`Reset link: ${process.env.NEXTAUTH_URL ?? 'http://localhost:3000'}/reset-password?token=${token}`);
 
-    return NextResponse.json({ success: true });
+    return NextResponse.json({ 
+      success: true,
+      mfaRequired: user.mfaEnabled, // Tell client if MFA verification is needed
+    });
   } catch (error) {
     console.error('Forgot password error:', error);
     return NextResponse.json(

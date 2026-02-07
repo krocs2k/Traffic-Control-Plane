@@ -4,6 +4,7 @@ import { PrismaAdapter } from '@next-auth/prisma-adapter';
 import bcrypt from 'bcryptjs';
 import { prisma } from './db';
 import { UserStatus, Role } from '@prisma/client';
+import { verifyMfaToken, verifyBackupCode } from './mfa';
 
 declare module 'next-auth' {
   interface Session {
@@ -12,6 +13,7 @@ declare module 'next-auth' {
       email: string;
       name: string;
       avatarUrl?: string | null;
+      mfaEnabled?: boolean;
       currentOrgId?: string;
       currentOrgRole?: Role;
     };
@@ -21,6 +23,7 @@ declare module 'next-auth' {
     email: string;
     name: string;
     avatarUrl?: string | null;
+    mfaEnabled?: boolean;
     status: UserStatus;
   }
 }
@@ -31,6 +34,7 @@ declare module 'next-auth/jwt' {
     email: string;
     name: string;
     avatarUrl?: string | null;
+    mfaEnabled?: boolean;
     currentOrgId?: string;
     currentOrgRole?: Role;
   }
@@ -52,6 +56,7 @@ export const authOptions: NextAuthOptions = {
       credentials: {
         email: { label: 'Email', type: 'email' },
         password: { label: 'Password', type: 'password' },
+        mfaToken: { label: 'MFA Token', type: 'text' },
       },
       async authorize(credentials) {
         if (!credentials?.email || !credentials?.password) {
@@ -75,11 +80,42 @@ export const authOptions: NextAuthOptions = {
           throw new Error('Invalid email or password');
         }
 
+        // Check if MFA is enabled
+        if (user.mfaEnabled && user.mfaSecret) {
+          const mfaToken = credentials.mfaToken;
+          
+          if (!mfaToken) {
+            // Signal that MFA is required
+            throw new Error('MFA_REQUIRED');
+          }
+
+          // Try TOTP verification first
+          const isValidTotp = verifyMfaToken(mfaToken, user.mfaSecret);
+          
+          if (!isValidTotp) {
+            // Try backup code
+            const backupResult = verifyBackupCode(mfaToken, user.mfaBackupCodes);
+            
+            if (backupResult.valid) {
+              // Remove used backup code
+              const updatedCodes = [...user.mfaBackupCodes];
+              updatedCodes.splice(backupResult.index, 1);
+              await prisma.user.update({
+                where: { id: user.id },
+                data: { mfaBackupCodes: updatedCodes },
+              });
+            } else {
+              throw new Error('Invalid MFA code');
+            }
+          }
+        }
+
         return {
           id: user?.id ?? '',
           email: user?.email ?? '',
           name: user?.name ?? '',
           avatarUrl: user?.avatarUrl,
+          mfaEnabled: user?.mfaEnabled,
           status: user?.status ?? 'ACTIVE',
         };
       },
@@ -92,6 +128,7 @@ export const authOptions: NextAuthOptions = {
         token.email = user?.email ?? '';
         token.name = user?.name ?? '';
         token.avatarUrl = (user as any)?.avatarUrl;
+        token.mfaEnabled = (user as any)?.mfaEnabled;
       }
       
       if (trigger === 'update' && session) {
@@ -131,6 +168,7 @@ export const authOptions: NextAuthOptions = {
         session.user.email = token?.email ?? '';
         session.user.name = token?.name ?? '';
         session.user.avatarUrl = token?.avatarUrl;
+        session.user.mfaEnabled = token?.mfaEnabled;
         session.user.currentOrgId = token?.currentOrgId;
         session.user.currentOrgRole = token?.currentOrgRole;
       }

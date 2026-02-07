@@ -17,7 +17,11 @@ export type AuditAction =
   | 'org.delete'
   | 'org.switch'
   | 'session.revoke'
-  | 'session.revoke_all';
+  | 'session.revoke_all'
+  | 'MFA_SETUP_INITIATED'
+  | 'MFA_ENABLED'
+  | 'MFA_DISABLED'
+  | 'MFA_BACKUP_CODES_REGENERATED';
 
 export interface AuditDetails {
   before?: Record<string, unknown>;
