@@ -506,14 +506,14 @@ export default function RoutingPage() {
               <div className="grid gap-2">
                 <Label htmlFor="policy-cluster">Target Cluster</Label>
                 <Select
-                  value={policyForm.clusterId}
-                  onValueChange={(value) => setPolicyForm({ ...policyForm, clusterId: value })}
+                  value={policyForm.clusterId || "__none__"}
+                  onValueChange={(value) => setPolicyForm({ ...policyForm, clusterId: value === "__none__" ? "" : value })}
                 >
                   <SelectTrigger>
                     <SelectValue placeholder="Select cluster (optional)" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">None</SelectItem>
+                    <SelectItem value="__none__">None</SelectItem>
                     {clusters.map(cluster => (
                       <SelectItem key={cluster.id} value={cluster.id}>
                         {cluster.name}
