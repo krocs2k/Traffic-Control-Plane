@@ -14,6 +14,7 @@ import {
   Moon,
   Sun,
   Bell,
+  Users,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
@@ -27,7 +28,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Badge } from '@/components/ui/badge';
 import { useTheme } from 'next-themes';
-import { Role, ROLE_LABELS } from '@/lib/types';
+import { Role, ROLE_LABELS, hasPermission } from '@/lib/types';
 
 interface Organization {
   id: string;
@@ -119,6 +120,9 @@ export function Navbar() {
     return null;
   }
 
+  const userRole = session?.user?.currentOrgRole ?? 'VIEWER';
+  const canManageUsers = hasPermission(userRole, 'manage_users');
+
   return (
     <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
       <div className="flex h-14 items-center px-4">
@@ -131,6 +135,16 @@ export function Navbar() {
 
         {/* Right side controls */}
         <div className="ml-auto flex items-center gap-2">
+          {/* Users Link - for admins */}
+          {canManageUsers && (
+            <Button variant="ghost" size="sm" asChild>
+              <Link href="/users">
+                <Users className="h-4 w-4 mr-2" />
+                <span className="hidden sm:inline">Users</span>
+              </Link>
+            </Button>
+          )}
+
           {/* Organization Switcher */}
           {(orgs?.length ?? 0) > 0 && (
             <DropdownMenu>

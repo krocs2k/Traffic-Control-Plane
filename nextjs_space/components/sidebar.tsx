@@ -16,11 +16,9 @@ import {
   FlaskConical,
   Shuffle,
   BellRing,
-  Users,
   FileText,
   ChevronLeft,
   ChevronRight,
-  Network,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -59,7 +57,6 @@ export function Sidebar() {
   }
 
   const userRole = session?.user?.currentOrgRole ?? 'VIEWER';
-  const canManageUsers = hasPermission(userRole, 'manage_users');
   const canViewAudit = hasPermission(userRole, 'view_audit');
   const canViewResources = hasPermission(userRole, 'view_resources');
   const canManageBackends = hasPermission(userRole, 'manage_backends');
@@ -78,7 +75,6 @@ export function Sidebar() {
     { href: '/dashboard/experiments', icon: FlaskConical, label: 'Experiments', permission: 'routing' },
     { href: '/dashboard/load-balancing', icon: Shuffle, label: 'Load Balancing', permission: 'routing' },
     { href: '/dashboard/alerts', icon: BellRing, label: 'Alerts', permission: 'resources' },
-    { href: '/users', icon: Users, label: 'Users', permission: 'users' },
     { href: '/audit', icon: FileText, label: 'Audit Log', permission: 'audit' },
   ];
 
@@ -93,8 +89,6 @@ export function Sidebar() {
         return canViewResources || canManageReplicas;
       case 'resources':
         return canViewResources;
-      case 'users':
-        return canManageUsers;
       case 'audit':
         return canViewAudit;
       default:
@@ -121,19 +115,6 @@ export function Sidebar() {
           isCollapsed ? 'w-16' : 'w-56'
         )}
       >
-        {/* Logo/Brand - only when expanded */}
-        {!isCollapsed && (
-          <div className="flex items-center gap-2 px-4 py-3 border-b">
-            <Network className="h-5 w-5 text-primary flex-shrink-0" />
-            <span className="font-semibold text-sm truncate">Traffic Control</span>
-          </div>
-        )}
-        {isCollapsed && (
-          <div className="flex items-center justify-center py-3 border-b">
-            <Network className="h-5 w-5 text-primary" />
-          </div>
-        )}
-
         {/* Navigation */}
         <nav className="flex-1 overflow-y-auto py-2">
           <ul className="space-y-1 px-2">
