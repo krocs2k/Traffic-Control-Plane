@@ -1193,6 +1193,88 @@ async function main() {
   });
   console.log('Created alert channels');
 
+  // Create Traffic Endpoints
+  const endpointData = [
+    {
+      slug: 'api-main-prod',
+      name: 'Main API Production',
+      description: 'Primary production API endpoint with load balancing',
+      type: 'LOAD_BALANCE' as const,
+      clusterId: productionCluster.id,
+      isActive: true,
+      totalRequests: BigInt(125430),
+      totalErrors: BigInt(234),
+      avgLatencyMs: 45.2,
+    },
+    {
+      slug: 'api-canary-v2',
+      name: 'Canary API v2',
+      description: 'Canary release endpoint for API version 2',
+      type: 'LOAD_BALANCE' as const,
+      clusterId: canaryCluster.id,
+      isActive: true,
+      totalRequests: BigInt(8920),
+      totalErrors: BigInt(12),
+      avgLatencyMs: 52.8,
+    },
+    {
+      slug: 'webhook-ingest',
+      name: 'Webhook Ingestion',
+      description: 'Endpoint for receiving external webhooks',
+      type: 'PROXY' as const,
+      clusterId: productionCluster.id,
+      isActive: true,
+      totalRequests: BigInt(45670),
+      totalErrors: BigInt(89),
+      avgLatencyMs: 28.4,
+    },
+    {
+      slug: 'health-check-mock',
+      name: 'Health Check Mock',
+      description: 'Mock endpoint for health check testing',
+      type: 'MOCK' as const,
+      clusterId: null,
+      isActive: true,
+      totalRequests: BigInt(3240),
+      totalErrors: BigInt(0),
+      avgLatencyMs: 2.1,
+      config: { mockResponse: { status: 'healthy', timestamp: new Date().toISOString() }, mockStatus: 200 },
+    },
+    {
+      slug: 'legacy-api-deprecated',
+      name: 'Legacy API (Deprecated)',
+      description: 'Deprecated legacy endpoint - will be removed soon',
+      type: 'ROUTE' as const,
+      clusterId: productionCluster.id,
+      isActive: false,
+      totalRequests: BigInt(98000),
+      totalErrors: BigInt(1250),
+      avgLatencyMs: 180.5,
+    },
+  ];
+
+  for (const endpoint of endpointData) {
+    await prisma.trafficEndpoint.upsert({
+      where: { slug: endpoint.slug },
+      update: {},
+      create: {
+        orgId: acmeCorp.id,
+        name: endpoint.name,
+        slug: endpoint.slug,
+        description: endpoint.description,
+        type: endpoint.type,
+        clusterId: endpoint.clusterId,
+        isActive: endpoint.isActive,
+        totalRequests: endpoint.totalRequests,
+        totalErrors: endpoint.totalErrors,
+        avgLatencyMs: endpoint.avgLatencyMs,
+        config: endpoint.config || {},
+        lastRequestAt: new Date(Date.now() - Math.random() * 3600000), // Random time in last hour
+      },
+    });
+  }
+  console.log('Created traffic endpoints');
+
   console.log('\nSeeding completed successfully!');
   console.log('\nDemo Organizations:');
   console.log('  - Acme Corp (acme-corp)');
@@ -1214,6 +1296,12 @@ async function main() {
   console.log('  Load Balancing Configs: Production (Least Connections), Canary (Weighted Round Robin)');
   console.log('  Alert Rules: High Latency, Error Rate Spike, Low Traffic Warning, High CPU Usage');
   console.log('  Alert Channels: Ops Team Email, Slack Alerts');
+  console.log('\nTraffic Endpoints:');
+  console.log('  - api-main-prod (Main API Production) - Load Balance');
+  console.log('  - api-canary-v2 (Canary API v2) - Load Balance');
+  console.log('  - webhook-ingest (Webhook Ingestion) - Proxy');
+  console.log('  - health-check-mock (Health Check Mock) - Mock');
+  console.log('  - legacy-api-deprecated (Legacy API) - Disabled');
 }
 
 main()

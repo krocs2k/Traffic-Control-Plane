@@ -26,6 +26,7 @@ import {
   Shield,
   FlaskConical,
   Shuffle,
+  Link2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
@@ -169,6 +170,14 @@ export function Navbar() {
                 <Link href="/dashboard/routing">
                   <Route className="h-4 w-4 mr-2" />
                   Routing
+                </Link>
+              </Button>
+            )}
+            {(canViewResources || canManageRouting) && (
+              <Button variant="ghost" size="sm" asChild>
+                <Link href="/dashboard/endpoints">
+                  <Link2 className="h-4 w-4 mr-2" />
+                  Endpoints
                 </Link>
               </Button>
             )}

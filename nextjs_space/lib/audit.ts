@@ -63,7 +63,11 @@ export type AuditAction =
   | 'alert.acknowledged'
   | 'alert.resolved'
   | 'alert.silenced'
-  | 'alert.updated';
+  | 'alert.updated'
+  // Endpoint Actions
+  | 'endpoint.created'
+  | 'endpoint.updated'
+  | 'endpoint.deleted';
 
 export interface AuditDetails {
   before?: Record<string, unknown>;

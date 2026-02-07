@@ -751,3 +751,42 @@ model AlertChannel {
   @@index([type])
   @@map("alert_channels")
 }
+
+// ============================================
+// Traffic Ingestion Endpoints
+// ============================================
+
+enum EndpointType {
+  LOAD_BALANCE
+  ROUTE
+  PROXY
+  MOCK
+}
+
+model TrafficEndpoint {
+  id              String        @id @default(cuid())
+  orgId           String
+  name            String
+  slug            String        @unique   // Unique URL path segment
+  description     String?
+  type            EndpointType  @default(LOAD_BALANCE)
+  clusterId       String?       // Target backend cluster for load balancing
+  policyId        String?       // Associated routing policy
+  config          Json          @default("{}") // Additional configuration (headers, timeouts, etc.)
+  isActive        Boolean       @default(true)
+  
+  // Statistics
+  totalRequests   BigInt        @default(0)
+  totalErrors     BigInt        @default(0)
+  avgLatencyMs    Float         @default(0)
+  lastRequestAt   DateTime?
+  
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@unique([orgId, name])
+  @@index([orgId])
+  @@index([slug])
+  @@index([isActive])
+  @@map("traffic_endpoints")
+}
