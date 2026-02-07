@@ -38,7 +38,15 @@ export type AuditAction =
   // Recommendation Actions
   | 'recommendation.accepted'
   | 'recommendation.rejected'
-  | 'recommendation.expired';
+  | 'recommendation.expired'
+  // Circuit Breaker Actions
+  | 'circuit_breaker.created'
+  | 'circuit_breaker.updated'
+  | 'circuit_breaker.deleted'
+  // Rate Limit Actions
+  | 'rate_limit.created'
+  | 'rate_limit.updated'
+  | 'rate_limit.deleted';
 
 export interface AuditDetails {
   before?: Record<string, unknown>;

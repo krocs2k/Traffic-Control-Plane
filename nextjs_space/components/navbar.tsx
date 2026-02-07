@@ -20,6 +20,9 @@ import {
   Server,
   Database,
   Bell,
+  Activity,
+  BarChart3,
+  Shield,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
@@ -171,6 +174,30 @@ export function Navbar() {
                 <Link href="/dashboard/replicas">
                   <Database className="h-4 w-4 mr-2" />
                   Replicas
+                </Link>
+              </Button>
+            )}
+            {canViewResources && (
+              <Button variant="ghost" size="sm" asChild>
+                <Link href="/dashboard/health">
+                  <Activity className="h-4 w-4 mr-2" />
+                  Health
+                </Link>
+              </Button>
+            )}
+            {canViewResources && (
+              <Button variant="ghost" size="sm" asChild>
+                <Link href="/dashboard/metrics">
+                  <BarChart3 className="h-4 w-4 mr-2" />
+                  Metrics
+                </Link>
+              </Button>
+            )}
+            {(canViewResources || canManageRouting) && (
+              <Button variant="ghost" size="sm" asChild>
+                <Link href="/dashboard/traffic-management">
+                  <Shield className="h-4 w-4 mr-2" />
+                  Traffic
                 </Link>
               </Button>
             )}

@@ -298,6 +298,156 @@ model LagMetric {
 }
 
 // ============================================
+// Health Checks
+// ============================================
+
+enum HealthCheckStatus {
+  HEALTHY
+  UNHEALTHY
+  DEGRADED
+  TIMEOUT
+  UNKNOWN
+}
+
+model HealthCheck {
+  id           String            @id @default(cuid())
+  backendId    String?
+  replicaId    String?
+  endpoint     String
+  status       HealthCheckStatus @default(UNKNOWN)
+  responseTime Int?              // in milliseconds
+  statusCode   Int?
+  errorMessage String?
+  metadata     Json              @default("{}")
+  checkedAt    DateTime          @default(now())
+
+  @@index([backendId])
+  @@index([replicaId])
+  @@index([status])
+  @@index([checkedAt])
+  @@map("health_checks")
+}
+
+// ============================================
+// Traffic Metrics
+// ============================================
+
+model TrafficMetric {
+  id             String   @id @default(cuid())
+  orgId          String
+  clusterId      String?
+  backendId      String?
+  policyId       String?
+  requestCount   Int      @default(0)
+  errorCount     Int      @default(0)
+  avgLatencyMs   Float    @default(0)
+  p50LatencyMs   Float?
+  p95LatencyMs   Float?
+  p99LatencyMs   Float?
+  bytesIn        BigInt   @default(0)
+  bytesOut       BigInt   @default(0)
+  period         String   @default("1m") // 1m, 5m, 1h, 1d
+  recordedAt     DateTime @default(now())
+
+  @@index([orgId])
+  @@index([clusterId])
+  @@index([backendId])
+  @@index([policyId])
+  @@index([recordedAt])
+  @@map("traffic_metrics")
+}
+
+model MetricSnapshot {
+  id                 String   @id @default(cuid())
+  orgId              String
+  totalRequests      BigInt   @default(0)
+  totalErrors        BigInt   @default(0)
+  avgResponseTime    Float    @default(0)
+  healthyBackends    Int      @default(0)
+  unhealthyBackends  Int      @default(0)
+  activeConnections  Int      @default(0)
+  requestsPerSecond  Float    @default(0)
+  errorRate          Float    @default(0)
+  metadata           Json     @default("{}")
+  snapshotAt         DateTime @default(now())
+
+  @@index([orgId])
+  @@index([snapshotAt])
+  @@map("metric_snapshots")
+}
+
+// ============================================
+// Circuit Breakers & Rate Limiting
+// ============================================
+
+enum CircuitBreakerState {
+  CLOSED
+  OPEN
+  HALF_OPEN
+}
+
+model CircuitBreaker {
+  id                  String              @id @default(cuid())
+  orgId               String
+  name                String
+  targetType          String              // backend, cluster, route
+  targetId            String
+  state               CircuitBreakerState @default(CLOSED)
+  failureThreshold    Int                 @default(5)
+  successThreshold    Int                 @default(3)
+  timeoutMs           Int                 @default(30000)
+  halfOpenMaxRequests Int                 @default(3)
+  failureCount        Int                 @default(0)
+  successCount        Int                 @default(0)
+  lastFailureAt       DateTime?
+  lastSuccessAt       DateTime?
+  lastStateChange     DateTime?
+  isActive            Boolean             @default(true)
+  metadata            Json                @default("{}")
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+
+  @@unique([orgId, name])
+  @@index([orgId])
+  @@index([state])
+  @@index([targetType, targetId])
+  @@map("circuit_breakers")
+}
+
+enum RateLimitType {
+  REQUESTS_PER_SECOND
+  REQUESTS_PER_MINUTE
+  REQUESTS_PER_HOUR
+  CONCURRENT_CONNECTIONS
+  BANDWIDTH
+}
+
+model RateLimitRule {
+  id              String        @id @default(cuid())
+  orgId           String
+  name            String
+  description     String?
+  type            RateLimitType @default(REQUESTS_PER_MINUTE)
+  limit           Int           @default(100)
+  windowMs        Int           @default(60000)
+  burstLimit      Int?          // Allow short bursts
+  scope           String        @default("global") // global, ip, user, route
+  matchConditions Json          @default("[]") // path patterns, headers, etc.
+  action          String        @default("reject") // reject, queue, throttle
+  isActive        Boolean       @default(true)
+  priority        Int           @default(100)
+  metadata        Json          @default("{}")
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@unique([orgId, name])
+  @@index([orgId])
+  @@index([isActive])
+  @@index([scope])
+  @@map("rate_limit_rules")
+}
+
+// ============================================
 // Notifications & Recommendations
 // ============================================
 

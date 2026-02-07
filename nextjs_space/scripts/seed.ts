@@ -1,4 +1,4 @@
-import { PrismaClient, Role, BackendStatus, LoadBalancerStrategy, RoutingPolicyType, ReplicaStatus, NotificationType, NotificationSeverity, RecommendationCategory, RecommendationStatus } from '@prisma/client';
+import { PrismaClient, Role, BackendStatus, LoadBalancerStrategy, RoutingPolicyType, ReplicaStatus, NotificationType, NotificationSeverity, RecommendationCategory, RecommendationStatus, CircuitBreakerState, RateLimitType, HealthCheckStatus } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
@@ -621,6 +621,276 @@ async function main() {
     ],
   });
 
+  // Get all backends for circuit breakers
+  const allBackends = await prisma.backend.findMany({
+    where: { cluster: { orgId: acmeCorp.id } },
+  });
+
+  // Create Circuit Breakers
+  console.log('Creating circuit breakers...');
+  const circuitBreakers = await Promise.all([
+    prisma.circuitBreaker.upsert({
+      where: { orgId_name: { orgId: acmeCorp.id, name: 'API Gateway Breaker' } },
+      update: {},
+      create: {
+        orgId: acmeCorp.id,
+        name: 'API Gateway Breaker',
+        targetType: 'backend',
+        targetId: allBackends[0]?.id || 'backend-1',
+        state: 'CLOSED',
+        failureThreshold: 5,
+        successThreshold: 3,
+        timeoutMs: 30000,
+        halfOpenMaxRequests: 3,
+        failureCount: 0,
+        successCount: 0,
+        isActive: true,
+      },
+    }),
+    prisma.circuitBreaker.upsert({
+      where: { orgId_name: { orgId: acmeCorp.id, name: 'Payment Service Breaker' } },
+      update: {},
+      create: {
+        orgId: acmeCorp.id,
+        name: 'Payment Service Breaker',
+        targetType: 'backend',
+        targetId: allBackends[1]?.id || 'backend-2',
+        state: 'CLOSED',
+        failureThreshold: 3,
+        successThreshold: 2,
+        timeoutMs: 15000,
+        halfOpenMaxRequests: 2,
+        failureCount: 1,
+        successCount: 5,
+        isActive: true,
+      },
+    }),
+    prisma.circuitBreaker.upsert({
+      where: { orgId_name: { orgId: acmeCorp.id, name: 'Legacy System Breaker' } },
+      update: {},
+      create: {
+        orgId: acmeCorp.id,
+        name: 'Legacy System Breaker',
+        targetType: 'backend',
+        targetId: allBackends[2]?.id || 'backend-3',
+        state: 'HALF_OPEN',
+        failureThreshold: 10,
+        successThreshold: 5,
+        timeoutMs: 60000,
+        halfOpenMaxRequests: 5,
+        failureCount: 8,
+        successCount: 2,
+        lastStateChange: new Date(Date.now() - 5 * 60 * 1000),
+        isActive: true,
+      },
+    }),
+  ]);
+  console.log(`Created ${circuitBreakers.length} circuit breakers`);
+
+  // Create Rate Limit Rules
+  console.log('Creating rate limit rules...');
+  const rateLimits = await Promise.all([
+    prisma.rateLimitRule.upsert({
+      where: { orgId_name: { orgId: acmeCorp.id, name: 'Global API Rate Limit' } },
+      update: {},
+      create: {
+        orgId: acmeCorp.id,
+        name: 'Global API Rate Limit',
+        description: 'Default rate limit for all API requests',
+        type: 'REQUESTS_PER_MINUTE',
+        limit: 1000,
+        windowMs: 60000,
+        burstLimit: 1200,
+        scope: 'global',
+        action: 'reject',
+        isActive: true,
+        priority: 100,
+      },
+    }),
+    prisma.rateLimitRule.upsert({
+      where: { orgId_name: { orgId: acmeCorp.id, name: 'Per-IP Rate Limit' } },
+      update: {},
+      create: {
+        orgId: acmeCorp.id,
+        name: 'Per-IP Rate Limit',
+        description: 'Rate limit per IP address to prevent abuse',
+        type: 'REQUESTS_PER_MINUTE',
+        limit: 100,
+        windowMs: 60000,
+        burstLimit: 150,
+        scope: 'ip',
+        action: 'reject',
+        isActive: true,
+        priority: 50,
+      },
+    }),
+    prisma.rateLimitRule.upsert({
+      where: { orgId_name: { orgId: acmeCorp.id, name: 'Auth Endpoint Limit' } },
+      update: {},
+      create: {
+        orgId: acmeCorp.id,
+        name: 'Auth Endpoint Limit',
+        description: 'Stricter rate limit for authentication endpoints',
+        type: 'REQUESTS_PER_MINUTE',
+        limit: 10,
+        windowMs: 60000,
+        scope: 'ip',
+        matchConditions: [{ path: '/api/auth/*' }],
+        action: 'reject',
+        isActive: true,
+        priority: 10,
+      },
+    }),
+    prisma.rateLimitRule.upsert({
+      where: { orgId_name: { orgId: acmeCorp.id, name: 'High Traffic Route' } },
+      update: {},
+      create: {
+        orgId: acmeCorp.id,
+        name: 'High Traffic Route',
+        description: 'Higher limits for high-traffic public endpoints',
+        type: 'REQUESTS_PER_SECOND',
+        limit: 500,
+        windowMs: 1000,
+        burstLimit: 750,
+        scope: 'route',
+        matchConditions: [{ path: '/api/public/*' }],
+        action: 'throttle',
+        isActive: true,
+        priority: 75,
+      },
+    }),
+  ]);
+  console.log(`Created ${rateLimits.length} rate limit rules`);
+
+  // Create sample Health Checks
+  console.log('Creating sample health checks...');
+  const healthCheckData: Array<{
+    backendId?: string;
+    replicaId?: string;
+    endpoint: string;
+    status: HealthCheckStatus;
+    responseTime: number;
+    statusCode: number;
+    errorMessage: string | null;
+    checkedAt: Date;
+  }> = [];
+  const healthStatuses: HealthCheckStatus[] = ['HEALTHY', 'HEALTHY', 'HEALTHY', 'DEGRADED', 'UNHEALTHY'];
+  
+  for (const backend of allBackends) {
+    for (let i = 0; i < 5; i++) {
+      const status = healthStatuses[Math.floor(Math.random() * healthStatuses.length)];
+      const responseTime = status === 'HEALTHY' ? 30 + Math.random() * 70 : 150 + Math.random() * 200;
+      
+      healthCheckData.push({
+        backendId: backend.id,
+        endpoint: `https://${backend.host}:${backend.port}/health`,
+        status,
+        responseTime: Math.floor(responseTime),
+        statusCode: status === 'HEALTHY' ? 200 : status === 'DEGRADED' ? 200 : 503,
+        errorMessage: status === 'UNHEALTHY' ? 'Connection refused' : null,
+        checkedAt: new Date(Date.now() - i * 5 * 60 * 1000),
+      });
+    }
+  }
+  
+  const allReplicas = await prisma.readReplica.findMany({ where: { orgId: acmeCorp.id } });
+  for (const replica of allReplicas) {
+    for (let i = 0; i < 3; i++) {
+      const status = Math.random() > 0.2 ? 'HEALTHY' : 'UNHEALTHY';
+      healthCheckData.push({
+        replicaId: replica.id,
+        endpoint: `postgres://${replica.host}:${replica.port}`,
+        status: status as HealthCheckStatus,
+        responseTime: Math.floor(20 + Math.random() * 50),
+        statusCode: status === 'HEALTHY' ? 200 : 0,
+        errorMessage: null,
+        checkedAt: new Date(Date.now() - i * 10 * 60 * 1000),
+      });
+    }
+  }
+  
+  await prisma.healthCheck.createMany({ data: healthCheckData });
+  console.log(`Created ${healthCheckData.length} health check records`);
+
+  // Create sample Traffic Metrics
+  console.log('Creating sample traffic metrics...');
+  const metricsData: Array<{
+    orgId: string;
+    clusterId?: string;
+    requestCount: number;
+    errorCount: number;
+    avgLatencyMs: number;
+    p50LatencyMs: number;
+    p95LatencyMs: number;
+    p99LatencyMs: number;
+    bytesIn: bigint;
+    bytesOut: bigint;
+    period: string;
+    recordedAt: Date;
+  }> = [];
+  const clustersList = await prisma.backendCluster.findMany({ where: { orgId: acmeCorp.id } });
+  
+  // Generate hourly metrics for the last 24 hours
+  for (let i = 0; i < 24; i++) {
+    const recordedAt = new Date(Date.now() - i * 60 * 60 * 1000);
+    const baseRequests = Math.floor(1000 + Math.random() * 4000);
+    const errRate = Math.random() * 0.05;
+    const avgLatency = 30 + Math.random() * 70;
+    
+    // Overall org metrics
+    metricsData.push({
+      orgId: acmeCorp.id,
+      requestCount: baseRequests,
+      errorCount: Math.floor(baseRequests * errRate),
+      avgLatencyMs: avgLatency,
+      p50LatencyMs: avgLatency * 0.8,
+      p95LatencyMs: avgLatency * 1.5,
+      p99LatencyMs: avgLatency * 2.5,
+      bytesIn: BigInt(baseRequests * 1024),
+      bytesOut: BigInt(baseRequests * 4096),
+      period: '1h',
+      recordedAt,
+    });
+    
+    // Per-cluster metrics
+    for (const cluster of clustersList) {
+      const clusterRequests = Math.floor(baseRequests * (0.2 + Math.random() * 0.3));
+      metricsData.push({
+        orgId: acmeCorp.id,
+        clusterId: cluster.id,
+        requestCount: clusterRequests,
+        errorCount: Math.floor(clusterRequests * Math.random() * 0.03),
+        avgLatencyMs: avgLatency * (0.8 + Math.random() * 0.4),
+        p50LatencyMs: avgLatency * 0.7,
+        p95LatencyMs: avgLatency * 1.4,
+        p99LatencyMs: avgLatency * 2.2,
+        bytesIn: BigInt(clusterRequests * 1024),
+        bytesOut: BigInt(clusterRequests * 4096),
+        period: '1h',
+        recordedAt,
+      });
+    }
+  }
+  
+  await prisma.trafficMetric.createMany({ data: metricsData });
+  console.log(`Created ${metricsData.length} traffic metric records`);
+
+  // Create metric snapshot
+  await prisma.metricSnapshot.create({
+    data: {
+      orgId: acmeCorp.id,
+      totalRequests: BigInt(50000),
+      totalErrors: BigInt(1250),
+      avgResponseTime: 65.5,
+      healthyBackends: allBackends.filter(b => b.status === 'HEALTHY').length,
+      unhealthyBackends: allBackends.filter(b => b.status !== 'HEALTHY').length,
+      activeConnections: Math.floor(100 + Math.random() * 400),
+      requestsPerSecond: 58.3,
+      errorRate: 2.5,
+    },
+  });
+  console.log('Created metric snapshot');
+
   console.log('\nSeeding completed successfully!');
   console.log('\nDemo Organizations:');
   console.log('  - Acme Corp (acme-corp)');
@@ -635,6 +905,8 @@ async function main() {
   console.log('  Backend Clusters: production-api, canary-api, staging-api');
   console.log('  Routing Policies: canary-release-v2, beta-users, geo-routing-eu, and more');
   console.log('  Read Replicas: us-east-1, us-west-2, eu-west-1, ap-southeast-1');
+  console.log('  Circuit Breakers: API Gateway Breaker, Payment Service Breaker, Legacy System Breaker');
+  console.log('  Rate Limits: Global API, Per-IP, Auth Endpoint, High Traffic Route');
 }
 
 main()
