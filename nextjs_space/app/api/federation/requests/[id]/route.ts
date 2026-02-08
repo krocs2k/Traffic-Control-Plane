@@ -1,54 +1,100 @@
+/**
+ * Federation Request Actions API
+ * 
+ * PATCH - Accept or reject a partnership request
+ * DELETE - Cancel/withdraw a request
+ */
+
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth-options';
 import { prisma } from '@/lib/db';
-import { createAuditLog, getClientIP } from '@/lib/audit';
+import { createAuditLog } from '@/lib/audit';
+import { refreshPeerList } from '@/lib/federation';
 
-// PATCH - Acknowledge or reject a partnership request
 export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const session = await getServerSession(authOptions);
-    if (!session?.user?.id) {
+    if (!session?.user?.email) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const orgId = session.user.currentOrgId;
-    if (!orgId) {
-      return NextResponse.json({ error: 'No organization selected' }, { status: 400 });
+    const user = await prisma.user.findUnique({
+      where: { email: session.user.email },
+      include: { memberships: true },
+    });
+
+    if (!user || user.memberships.length === 0) {
+      return NextResponse.json({ error: 'No organization found' }, { status: 404 });
+    }
+
+    const membership = user.memberships[0];
+    if (!['OWNER', 'ADMIN'].includes(membership.role)) {
+      return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 });
     }
 
     const { id } = await params;
+    const orgId = membership.orgId;
     const body = await request.json();
-    const { action, rejectionReason } = body; // action: 'acknowledge' or 'reject'
+    const { action, reason } = body; // action: 'accept' | 'reject'
+
+    if (!action || !['accept', 'reject'].includes(action)) {
+      return NextResponse.json(
+        { error: 'Invalid action. Must be "accept" or "reject"' },
+        { status: 400 }
+      );
+    }
 
     // Get the request
     const federationRequest = await prisma.federationRequest.findFirst({
-      where: { id, orgId },
+      where: { id, orgId, status: 'PENDING' },
     });
 
     if (!federationRequest) {
-      return NextResponse.json({ error: 'Request not found' }, { status: 404 });
+      return NextResponse.json(
+        { error: 'Request not found or already processed' },
+        { status: 404 }
+      );
     }
 
-    if (federationRequest.status !== 'PENDING') {
-      return NextResponse.json({ error: 'Request is no longer pending' }, { status: 400 });
+    // Check if expired
+    if (federationRequest.expiresAt < new Date()) {
+      await prisma.federationRequest.update({
+        where: { id },
+        data: { status: 'EXPIRED' },
+      });
+      return NextResponse.json(
+        { error: 'Request has expired' },
+        { status: 410 }
+      );
     }
 
-    // Get this node's config
-    const myConfig = await prisma.federationConfig.findUnique({
-      where: { orgId },
-    });
+    if (action === 'accept') {
+      // Only incoming requests can be accepted
+      if (federationRequest.requestType !== 'INCOMING') {
+        return NextResponse.json(
+          { error: 'Can only accept incoming requests' },
+          { status: 400 }
+        );
+      }
 
-    if (!myConfig) {
-      return NextResponse.json({ error: 'Federation not configured' }, { status: 400 });
-    }
+      // Create partner record
+      await prisma.federationPartner.create({
+        data: {
+          orgId,
+          nodeId: federationRequest.requesterNodeId,
+          nodeName: federationRequest.requesterNodeName,
+          nodeUrl: federationRequest.requesterNodeUrl,
+          secretKey: federationRequest.secretKey,
+          isActive: true,
+          syncStatus: 'PENDING',
+        },
+      });
 
-    if (action === 'acknowledge') {
-      // This node becomes/remains Principle
-      // Update request
+      // Update request status
       await prisma.federationRequest.update({
         where: { id },
         data: {
@@ -57,240 +103,154 @@ export async function PATCH(
         },
       });
 
-      // Add the requester as a Partner
-      await prisma.federationPartner.upsert({
-        where: {
-          orgId_nodeId: {
-            orgId,
-            nodeId: federationRequest.requesterNodeId,
-          },
-        },
-        create: {
-          orgId,
-          nodeId: federationRequest.requesterNodeId,
-          nodeName: federationRequest.requesterNodeName,
-          nodeUrl: federationRequest.requesterNodeUrl,
-          secretKey: federationRequest.secretKey,
-          isActive: true,
-        },
-        update: {
-          nodeName: federationRequest.requesterNodeName,
-          nodeUrl: federationRequest.requesterNodeUrl,
-          secretKey: federationRequest.secretKey,
-          isActive: true,
-          updatedAt: new Date(),
-        },
-      });
-
-      // Update this node's role to PRINCIPLE if not already
-      if (myConfig.role !== 'PRINCIPLE') {
-        await prisma.federationConfig.update({
-          where: { orgId },
-          data: { role: 'PRINCIPLE' },
-        });
-      }
-
-      // Notify the requester that they've been acknowledged
+      // Notify the requester (best effort)
       try {
-        await fetch(`${federationRequest.requesterNodeUrl}/api/federation/requests/acknowledge-callback`, {
+        await fetch(`${federationRequest.requesterNodeUrl}/api/federation/requests/callback`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            principleNodeId: myConfig.nodeId,
-            principleNodeName: myConfig.nodeName,
-            principleNodeUrl: myConfig.nodeUrl,
+            requestId: federationRequest.id,
+            status: 'ACKNOWLEDGED',
             secretKey: federationRequest.secretKey,
           }),
+          signal: AbortSignal.timeout(5000),
         });
-      } catch (callbackError) {
-        console.error('Failed to notify requester:', callbackError);
+      } catch {
+        // Non-critical failure
+        console.warn('Failed to notify requester of acceptance');
       }
 
       await createAuditLog({
         orgId,
-        userId: session.user.id,
-        action: 'federation.request.acknowledged',
+        userId: user.id,
+        action: 'federation.request.accepted',
         resourceType: 'federation_request',
         resourceId: id,
-        details: { 
-          requesterNodeId: federationRequest.requesterNodeId,
-          requesterNodeName: federationRequest.requesterNodeName,
+        details: {
+          partnerNodeId: federationRequest.requesterNodeId,
+          partnerNodeName: federationRequest.requesterNodeName,
         },
-        ipAddress: getClientIP(request),
       });
 
-      // Trigger initial sync
-      await triggerFullSync(orgId, federationRequest.requesterNodeId);
+      // Refresh peer list
+      await refreshPeerList(orgId);
 
-      return NextResponse.json({ success: true, status: 'acknowledged' });
-    } else if (action === 'reject') {
-      // Reject the request
+      return NextResponse.json({
+        success: true,
+        message: 'Partnership request accepted',
+        partner: {
+          nodeId: federationRequest.requesterNodeId,
+          nodeName: federationRequest.requesterNodeName,
+          nodeUrl: federationRequest.requesterNodeUrl,
+        },
+      });
+    } else {
+      // Reject
       await prisma.federationRequest.update({
         where: { id },
         data: {
           status: 'REJECTED',
           rejectedAt: new Date(),
-          rejectionReason,
+          rejectionReason: reason || 'Rejected by administrator',
         },
       });
 
-      // Notify the requester
-      try {
-        await fetch(`${federationRequest.requesterNodeUrl}/api/federation/requests/reject-callback`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            principleNodeId: myConfig.nodeId,
-            reason: rejectionReason,
-          }),
-        });
-      } catch (callbackError) {
-        console.error('Failed to notify requester of rejection:', callbackError);
+      // Notify the requester (best effort)
+      if (federationRequest.requestType === 'INCOMING') {
+        try {
+          await fetch(`${federationRequest.requesterNodeUrl}/api/federation/requests/callback`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              requestId: federationRequest.id,
+              status: 'REJECTED',
+              reason: reason || 'Rejected by administrator',
+            }),
+            signal: AbortSignal.timeout(5000),
+          });
+        } catch {
+          console.warn('Failed to notify requester of rejection');
+        }
       }
 
       await createAuditLog({
         orgId,
-        userId: session.user.id,
+        userId: user.id,
         action: 'federation.request.rejected',
         resourceType: 'federation_request',
         resourceId: id,
-        details: { 
+        details: {
           requesterNodeId: federationRequest.requesterNodeId,
-          rejectionReason,
+          reason,
         },
-        ipAddress: getClientIP(request),
       });
 
-      return NextResponse.json({ success: true, status: 'rejected' });
-    } else {
-      return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
+      return NextResponse.json({
+        success: true,
+        message: 'Partnership request rejected',
+      });
     }
   } catch (error) {
-    console.error('Error processing request action:', error);
-    return NextResponse.json({ error: 'Failed to process request' }, { status: 500 });
+    console.error('Error processing request:', error);
+    return NextResponse.json(
+      { error: 'Failed to process request' },
+      { status: 500 }
+    );
   }
 }
 
-// Helper function to trigger full sync to a partner
-async function triggerFullSync(orgId: string, partnerNodeId: string) {
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
   try {
-    const partner = await prisma.federationPartner.findFirst({
-      where: { orgId, nodeId: partnerNodeId, isActive: true },
-    });
-
-    if (!partner) return;
-
-    // Create sync log
-    const syncLog = await prisma.federationSyncLog.create({
-      data: {
-        orgId,
-        partnerId: partner.id,
-        direction: 'OUTGOING',
-        syncType: 'FULL',
-        status: 'IN_PROGRESS',
-      },
-    });
-
-    // Gather all data to sync
-    const syncData = await gatherSyncData(orgId);
-
-    // Send to partner
-    try {
-      const response = await fetch(`${partner.nodeUrl}/api/federation/sync/receive`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Federation-Secret': partner.secretKey,
-        },
-        body: JSON.stringify({
-          syncType: 'FULL',
-          data: syncData,
-          sourceNodeId: (await prisma.federationConfig.findUnique({ where: { orgId } }))?.nodeId,
-        }),
-      });
-
-      if (response.ok) {
-        await prisma.federationSyncLog.update({
-          where: { id: syncLog.id },
-          data: {
-            status: 'COMPLETED',
-            completedAt: new Date(),
-            durationMs: Date.now() - syncLog.startedAt.getTime(),
-            entitiesSynced: syncData.counts,
-          },
-        });
-
-        await prisma.federationPartner.update({
-          where: { id: partner.id },
-          data: {
-            lastSyncAt: new Date(),
-            syncStatus: 'COMPLETED',
-            failedSyncCount: 0,
-          },
-        });
-      } else {
-        throw new Error(`Sync failed: ${response.statusText}`);
-      }
-    } catch (syncError: any) {
-      await prisma.federationSyncLog.update({
-        where: { id: syncLog.id },
-        data: {
-          status: 'FAILED',
-          completedAt: new Date(),
-          errorMessage: syncError.message,
-        },
-      });
-
-      await prisma.federationPartner.update({
-        where: { id: partner.id },
-        data: {
-          syncStatus: 'FAILED',
-          failedSyncCount: { increment: 1 },
-        },
-      });
+    const session = await getServerSession(authOptions);
+    if (!session?.user?.email) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
+
+    const user = await prisma.user.findUnique({
+      where: { email: session.user.email },
+      include: { memberships: true },
+    });
+
+    if (!user || user.memberships.length === 0) {
+      return NextResponse.json({ error: 'No organization found' }, { status: 404 });
+    }
+
+    const { id } = await params;
+    const orgId = user.memberships[0].orgId;
+
+    // Cancel/delete the request
+    const deleted = await prisma.federationRequest.updateMany({
+      where: { id, orgId, status: 'PENDING' },
+      data: { status: 'CANCELLED' },
+    });
+
+    if (deleted.count === 0) {
+      return NextResponse.json(
+        { error: 'Request not found or already processed' },
+        { status: 404 }
+      );
+    }
+
+    await createAuditLog({
+      orgId,
+      userId: user.id,
+      action: 'federation.request.cancelled',
+      resourceType: 'federation_request',
+      resourceId: id,
+    });
+
+    return NextResponse.json({
+      success: true,
+      message: 'Request cancelled',
+    });
   } catch (error) {
-    console.error('Error triggering sync:', error);
+    console.error('Error cancelling request:', error);
+    return NextResponse.json(
+      { error: 'Failed to cancel request' },
+      { status: 500 }
+    );
   }
-}
-
-// Helper function to gather all data for sync
-async function gatherSyncData(orgId: string) {
-  const [org, members, clusters, backends, policies, replicas, experiments, loadBalancerConfigs, endpoints, circuitBreakers, rateLimits, auditLogs] = await Promise.all([
-    prisma.organization.findUnique({ where: { id: orgId } }),
-    prisma.organizationMember.findMany({ where: { orgId }, include: { user: { select: { id: true, email: true, name: true, status: true } } } }),
-    prisma.backendCluster.findMany({ where: { orgId } }),
-    prisma.backend.findMany({ where: { cluster: { orgId } } }),
-    prisma.routingPolicy.findMany({ where: { orgId } }),
-    prisma.readReplica.findMany({ where: { orgId } }),
-    prisma.experiment.findMany({ where: { orgId }, include: { variants: true } }),
-    prisma.loadBalancerConfig.findMany({ where: { orgId } }),
-    prisma.trafficEndpoint.findMany({ where: { orgId } }),
-    prisma.circuitBreaker.findMany({ where: { orgId } }),
-    prisma.rateLimitRule.findMany({ where: { orgId } }),
-    prisma.auditLog.findMany({ where: { orgId }, orderBy: { createdAt: 'desc' }, take: 1000 }),
-  ]);
-
-  return {
-    organization: org,
-    members,
-    clusters,
-    backends,
-    policies,
-    replicas,
-    experiments,
-    loadBalancerConfigs,
-    endpoints,
-    circuitBreakers,
-    rateLimits,
-    auditLogs,
-    counts: {
-      clusters: clusters.length,
-      backends: backends.length,
-      policies: policies.length,
-      replicas: replicas.length,
-      experiments: experiments.length,
-      endpoints: endpoints.length,
-    },
-  };
 }

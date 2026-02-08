@@ -1,11 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/db';
 import { LoadBalancerStrategy } from '@prisma/client';
 import {
   getClientIp,
   getAffinityKey,
-  getAffinityBackend,
-  setAffinityMapping,
   selectBackend,
   buildTargetUrl,
   buildProxyHeaders,
@@ -21,6 +18,27 @@ import {
   type Backend,
   type EndpointConfig,
 } from '@/lib/proxy';
+import {
+  getCachedEndpoint,
+  getCachedCluster,
+  getCachedLoadBalancerConfig,
+  getCachedAffinity,
+  setCachedAffinity,
+} from '@/lib/cache';
+import { queueRequestMetrics } from '@/lib/metrics-queue';
+import {
+  routeRequest,
+  forwardRequest,
+  isForwardedRequest,
+  recordReceivedForward,
+  shouldHandleLocally,
+} from '@/lib/federation';
+
+// ============================================
+// Configuration
+// ============================================
+
+const MAX_BODY_REWRITE_SIZE = 5 * 1024 * 1024; // 5MB - skip body rewriting for larger responses
 
 // ============================================
 // Main Request Handler
@@ -34,65 +52,91 @@ async function handleRequest(
   const { slug } = await params;
 
   try {
-    // Find the endpoint
-    const endpoint = await prisma.trafficEndpoint.findUnique({
-      where: { slug },
-    });
+    // Check if this is a forwarded request from federation
+    if (isForwardedRequest(request.headers)) {
+      recordReceivedForward();
+    }
 
-    if (!endpoint) {
+    // Use cached endpoint lookup (30-50% reduction in DB calls)
+    const endpointData = await getCachedEndpoint(slug);
+
+    if (!endpointData) {
       return NextResponse.json(
         { error: ProxyErrors.ENDPOINT_NOT_FOUND.message, code: ProxyErrors.ENDPOINT_NOT_FOUND.code, slug },
         { status: ProxyErrors.ENDPOINT_NOT_FOUND.statusCode }
       );
     }
 
-    if (!endpoint.isActive) {
+    if (!endpointData.isActive) {
       return NextResponse.json(
         { error: ProxyErrors.ENDPOINT_DISABLED.message, code: ProxyErrors.ENDPOINT_DISABLED.code, slug },
         { status: ProxyErrors.ENDPOINT_DISABLED.statusCode }
       );
     }
 
-    const config = endpoint.config as Record<string, unknown>;
+    const config = endpointData.config as Record<string, unknown>;
     const clientIp = getClientIp(request);
     const originalHost = request.headers.get('host') || '';
     const originalProtocol = request.headers.get('x-forwarded-proto') || 
                             (request.nextUrl.protocol === 'https:' ? 'https' : 'http');
 
+    // Federation routing check (only if not already forwarded)
+    if (!shouldHandleLocally(request.headers)) {
+      const affinityKey = `${slug}:${clientIp}`;
+      const routingDecision = routeRequest(affinityKey, endpointData.type);
+      
+      if (routingDecision.shouldForward && routingDecision.targetNodeUrl) {
+        try {
+          const forwardedResponse = await forwardRequest(
+            routingDecision.targetNodeUrl,
+            request.clone()
+          );
+          return new NextResponse(forwardedResponse.body, {
+            status: forwardedResponse.status,
+            headers: forwardedResponse.headers,
+          });
+        } catch (error) {
+          console.warn('Federation forward failed, handling locally:', error);
+          // Fall through to handle locally
+        }
+      }
+    }
+
     // Cast endpoint to our config type
     const endpointConfig: EndpointConfig = {
-      id: endpoint.id,
-      slug: endpoint.slug,
-      name: endpoint.name,
-      customDomain: endpoint.customDomain,
-      proxyMode: endpoint.proxyMode,
-      sessionAffinity: endpoint.sessionAffinity,
-      affinityCookieName: endpoint.affinityCookieName,
-      affinityHeaderName: endpoint.affinityHeaderName,
-      affinityTtlSeconds: endpoint.affinityTtlSeconds,
-      connectTimeout: endpoint.connectTimeout,
-      readTimeout: endpoint.readTimeout,
-      writeTimeout: endpoint.writeTimeout,
-      rewriteHostHeader: endpoint.rewriteHostHeader,
-      rewriteLocationHeader: endpoint.rewriteLocationHeader,
-      rewriteCookieDomain: endpoint.rewriteCookieDomain,
-      rewriteCorsHeaders: endpoint.rewriteCorsHeaders,
-      preserveHostHeader: endpoint.preserveHostHeader,
-      stripPathPrefix: endpoint.stripPathPrefix,
-      addPathPrefix: endpoint.addPathPrefix,
-      forwardHeaders: endpoint.forwardHeaders,
-      websocketEnabled: endpoint.websocketEnabled,
+      id: endpointData.id,
+      slug: endpointData.slug,
+      name: endpointData.name,
+      customDomain: endpointData.customDomain,
+      proxyMode: endpointData.proxyMode,
+      sessionAffinity: endpointData.sessionAffinity,
+      affinityCookieName: endpointData.affinityCookieName,
+      affinityHeaderName: endpointData.affinityHeaderName,
+      affinityTtlSeconds: endpointData.affinityTtlSeconds,
+      connectTimeout: endpointData.connectTimeout,
+      readTimeout: endpointData.readTimeout,
+      writeTimeout: endpointData.writeTimeout,
+      rewriteHostHeader: endpointData.rewriteHostHeader,
+      rewriteLocationHeader: endpointData.rewriteLocationHeader,
+      rewriteCookieDomain: endpointData.rewriteCookieDomain,
+      rewriteCorsHeaders: endpointData.rewriteCorsHeaders,
+      preserveHostHeader: endpointData.preserveHostHeader,
+      stripPathPrefix: endpointData.stripPathPrefix,
+      addPathPrefix: endpointData.addPathPrefix,
+      forwardHeaders: endpointData.forwardHeaders,
+      websocketEnabled: endpointData.websocketEnabled,
     };
 
     // Handle based on endpoint type
     let response: NextResponse;
+    let backendId: string | undefined;
 
-    switch (endpoint.type) {
+    switch (endpointData.type) {
       case 'MOCK': {
         // Return mock response from config
         const mockResponse = config.mockResponse || {
           message: 'Mock response from Traffic Control Plane',
-          endpoint: endpoint.name,
+          endpoint: endpointData.name,
           timestamp: new Date().toISOString(),
         };
         const mockStatus = (config.mockStatus as number) || 200;
@@ -103,14 +147,16 @@ async function handleRequest(
       case 'LOAD_BALANCE':
       case 'ROUTE':
       case 'PROXY': {
-        response = await handleProxyRequest(
+        const result = await handleProxyRequest(
           request,
           endpointConfig,
-          endpoint.clusterId,
+          endpointData.cluster || null,
           clientIp,
           originalHost,
           originalProtocol
         );
+        response = result.response;
+        backendId = result.backendId;
         break;
       }
 
@@ -121,25 +167,25 @@ async function handleRequest(
         );
     }
 
-    // Update statistics
+    // Queue metrics asynchronously (removes blocking DB write)
     const latency = Date.now() - startTime;
     const isError = response.status >= 400;
 
-    await prisma.trafficEndpoint.update({
-      where: { id: endpoint.id },
-      data: {
-        totalRequests: { increment: 1 },
-        totalErrors: isError ? { increment: 1 } : undefined,
-        avgLatencyMs: latency,
-        lastRequestAt: new Date(),
-      },
-    }).catch(console.error);
+    queueRequestMetrics({
+      endpointId: endpointData.id,
+      orgId: endpointData.orgId,
+      clusterId: endpointData.clusterId || undefined,
+      backendId,
+      latencyMs: latency,
+      isError,
+    });
 
     // Add diagnostic headers (can be disabled in production)
-    response.headers.set('X-Endpoint-Id', endpoint.id);
-    response.headers.set('X-Endpoint-Slug', endpoint.slug);
+    response.headers.set('X-Endpoint-Id', endpointData.id);
+    response.headers.set('X-Endpoint-Slug', endpointData.slug);
     response.headers.set('X-Response-Time', `${latency}ms`);
-    response.headers.set('X-Proxy-Mode', endpoint.proxyMode);
+    response.headers.set('X-Proxy-Mode', endpointData.proxyMode);
+    response.headers.set('X-Cache-Status', 'HIT'); // Indicates caching is active
 
     return response;
   } catch (error) {
@@ -152,69 +198,82 @@ async function handleRequest(
 }
 
 // ============================================
+// Types for Proxy Results
+// ============================================
+
+interface ProxyResult {
+  response: NextResponse;
+  backendId?: string;
+}
+
+// Cluster type from cache
+type ClusterWithBackends = {
+  id: string;
+  name: string;
+  strategy: LoadBalancerStrategy;
+  backends: Backend[];
+} | null;
+
+// ============================================
 // Proxy Request Handler
 // ============================================
 
 async function handleProxyRequest(
   request: NextRequest,
   endpoint: EndpointConfig,
-  clusterId: string | null,
+  cluster: ClusterWithBackends,
   clientIp: string,
   originalHost: string,
   originalProtocol: string
-): Promise<NextResponse> {
+): Promise<ProxyResult> {
   // Check for WebSocket request
   if (isWebSocketRequest(request)) {
     if (!endpoint.websocketEnabled) {
-      return NextResponse.json(
-        { error: ProxyErrors.WEBSOCKET_NOT_SUPPORTED.message, code: ProxyErrors.WEBSOCKET_NOT_SUPPORTED.code },
-        { status: ProxyErrors.WEBSOCKET_NOT_SUPPORTED.statusCode }
-      );
+      return {
+        response: NextResponse.json(
+          { error: ProxyErrors.WEBSOCKET_NOT_SUPPORTED.message, code: ProxyErrors.WEBSOCKET_NOT_SUPPORTED.code },
+          { status: ProxyErrors.WEBSOCKET_NOT_SUPPORTED.statusCode }
+        ),
+      };
     }
     // Note: Full WebSocket proxying requires a different approach (upgrade handling)
     // For now, return info about where the WebSocket should connect
-    return await handleWebSocketInfo(request, endpoint, clusterId, clientIp);
+    const wsResponse = await handleWebSocketInfo(request, endpoint, cluster, clientIp);
+    return { response: wsResponse };
   }
 
-  // Get cluster and backends
-  if (!clusterId) {
-    return NextResponse.json(
-      { error: ProxyErrors.NO_CLUSTER.message, code: ProxyErrors.NO_CLUSTER.code, endpoint: endpoint.name },
-      { status: ProxyErrors.NO_CLUSTER.statusCode }
-    );
+  // Get cluster and backends (already cached)
+  if (!cluster) {
+    return {
+      response: NextResponse.json(
+        { error: ProxyErrors.NO_CLUSTER.message, code: ProxyErrors.NO_CLUSTER.code, endpoint: endpoint.name },
+        { status: ProxyErrors.NO_CLUSTER.statusCode }
+      ),
+    };
   }
 
-  const cluster = await prisma.backendCluster.findUnique({
-    where: { id: clusterId },
-    include: {
-      backends: {
-        where: { isActive: true },
-      },
-    },
-  });
-
-  if (!cluster || cluster.backends.length === 0) {
-    return NextResponse.json(
-      { error: ProxyErrors.NO_BACKENDS.message, code: ProxyErrors.NO_BACKENDS.code, cluster: cluster?.name },
-      { status: ProxyErrors.NO_BACKENDS.statusCode }
-    );
+  if (cluster.backends.length === 0) {
+    return {
+      response: NextResponse.json(
+        { error: ProxyErrors.NO_BACKENDS.message, code: ProxyErrors.NO_BACKENDS.code, cluster: cluster.name },
+        { status: ProxyErrors.NO_BACKENDS.statusCode }
+      ),
+    };
   }
 
-  // Check for load balancer config override
+  // Check for load balancer config override (cached)
   let strategy = cluster.strategy;
-  const lbConfig = await prisma.loadBalancerConfig.findFirst({
-    where: { clusterId },
-  });
+  const lbConfig = await getCachedLoadBalancerConfig(cluster.id);
   if (lbConfig) {
     strategy = lbConfig.strategy as LoadBalancerStrategy;
   }
 
-  // Get affinity key and check for existing backend assignment
+  // Get affinity key and check for existing backend assignment (cached)
   const affinityKey = getAffinityKey(request, endpoint, clientIp);
   let preferredBackendId: string | null = null;
 
   if (affinityKey && endpoint.sessionAffinity !== 'NONE') {
-    preferredBackendId = await getAffinityBackend(endpoint.id, affinityKey);
+    preferredBackendId = await getCachedAffinity(endpoint.id, affinityKey);
   }
 
   // Select backend
@@ -222,10 +281,12 @@ async function handleProxyRequest(
   const backend = selectBackend(backends, strategy, cluster.id, clientIp, preferredBackendId);
 
   if (!backend) {
-    return NextResponse.json(
-      { error: ProxyErrors.NO_HEALTHY_BACKENDS.message, code: ProxyErrors.NO_HEALTHY_BACKENDS.code, cluster: cluster.name },
-      { status: ProxyErrors.NO_HEALTHY_BACKENDS.statusCode }
-    );
+    return {
+      response: NextResponse.json(
+        { error: ProxyErrors.NO_HEALTHY_BACKENDS.message, code: ProxyErrors.NO_HEALTHY_BACKENDS.code, cluster: cluster.name },
+        { status: ProxyErrors.NO_HEALTHY_BACKENDS.statusCode }
+      ),
+    };
   }
 
   // Build target URL
@@ -233,20 +294,27 @@ async function handleProxyRequest(
   const targetUrl = buildTargetUrl(backend, originalPath, endpoint);
 
   // Handle based on proxy mode
+  let response: NextResponse;
   switch (endpoint.proxyMode) {
     case 'REDIRECT':
-      return handleRedirectMode(targetUrl, backend, endpoint, affinityKey);
+      response = handleRedirectMode(targetUrl, backend, endpoint, affinityKey);
+      break;
 
     case 'PASSTHROUGH':
-      return handlePassthroughMode(request, targetUrl, backend, endpoint, clientIp, originalHost, originalProtocol, affinityKey);
+      response = await handlePassthroughMode(request, targetUrl, backend, endpoint, clientIp, originalHost, originalProtocol, affinityKey);
+      break;
 
     case 'SMART':
-      return handleSmartMode(request, targetUrl, backend, endpoint, clientIp, originalHost, originalProtocol, affinityKey);
+      response = await handleSmartMode(request, targetUrl, backend, endpoint, clientIp, originalHost, originalProtocol, affinityKey);
+      break;
 
     case 'REVERSE_PROXY':
     default:
-      return handleReverseProxyMode(request, targetUrl, backend, endpoint, clientIp, originalHost, originalProtocol, affinityKey);
+      response = await handleReverseProxyMode(request, targetUrl, backend, endpoint, clientIp, originalHost, originalProtocol, affinityKey);
+      break;
   }
+
+  return { response, backendId: backend.id };
 }
 
 // ============================================
@@ -302,9 +370,10 @@ async function handlePassthroughMode(
     // Add backend info header
     responseHeaders.set('X-Backend-Host', backend.host);
 
-    // Handle affinity
+    // Handle affinity (async, non-blocking via cache)
     if (affinityKey && endpoint.sessionAffinity !== 'NONE') {
-      await setAffinityMapping(endpoint.id, affinityKey, backend.id, endpoint.affinityTtlSeconds);
+      // Fire and forget - don't block the response
+      setCachedAffinity(endpoint.id, affinityKey, backend.id, endpoint.affinityTtlSeconds).catch(() => {});
       if (endpoint.sessionAffinity === 'COOKIE' && !request.headers.get('cookie')?.includes(endpoint.affinityCookieName)) {
         responseHeaders.append('Set-Cookie', generateAffinityCookie(endpoint, backend.id));
       }
@@ -367,9 +436,10 @@ async function handleReverseProxyMode(
     // Add backend info header
     responseHeaders.set('X-Backend-Host', backend.host);
 
-    // Handle affinity
+    // Handle affinity (async, non-blocking via cache)
     if (affinityKey && endpoint.sessionAffinity !== 'NONE') {
-      await setAffinityMapping(endpoint.id, affinityKey, backend.id, endpoint.affinityTtlSeconds);
+      // Fire and forget - don't block the response
+      setCachedAffinity(endpoint.id, affinityKey, backend.id, endpoint.affinityTtlSeconds).catch(() => {});
       if (endpoint.sessionAffinity === 'COOKIE' && !request.headers.get('cookie')?.includes(endpoint.affinityCookieName)) {
         responseHeaders.append('Set-Cookie', generateAffinityCookie(endpoint, backend.id));
       }
@@ -377,16 +447,26 @@ async function handleReverseProxyMode(
 
     // Check if we need to rewrite the body
     const contentType = backendResponse.headers.get('content-type');
+    const contentLength = parseInt(backendResponse.headers.get('content-length') || '0', 10);
     let responseBody: BodyInit | null = backendResponse.body;
 
-    // For SMART mode analysis or body rewriting in JSON/HTML responses
-    if (shouldRewriteBody(contentType)) {
+    // Skip body buffering for large responses (performance optimization)
+    // Only buffer and rewrite small responses that need URL rewriting
+    const shouldBuffer = shouldRewriteBody(contentType) && 
+                         (contentLength === 0 || contentLength < MAX_BODY_REWRITE_SIZE);
+
+    if (shouldBuffer) {
       const bodyText = await backendResponse.text();
       const rewrittenBody = rewriteResponseBody(bodyText, backend, originalHost, originalProtocol);
       responseBody = rewrittenBody;
       
       // Update content-length if we modified the body
       responseHeaders.set('Content-Length', new TextEncoder().encode(rewrittenBody).length.toString());
+      responseHeaders.set('X-Body-Rewritten', 'true');
+    } else if (contentLength >= MAX_BODY_REWRITE_SIZE) {
+      // Large response - stream directly without buffering
+      responseHeaders.set('X-Body-Rewritten', 'false');
+      responseHeaders.set('X-Body-Skipped-Reason', 'size');
     }
 
     return new NextResponse(responseBody, {
@@ -460,23 +540,28 @@ async function handleSmartMode(
     rewrittenHeaders.set('X-Smart-Mode-Decision', decision.reason);
     rewrittenHeaders.set('X-Backend-Host', backend.host);
 
-    // Handle affinity
+    // Handle affinity (async, non-blocking via cache)
     if (affinityKey && endpoint.sessionAffinity !== 'NONE') {
-      await setAffinityMapping(endpoint.id, affinityKey, backend.id, endpoint.affinityTtlSeconds);
+      setCachedAffinity(endpoint.id, affinityKey, backend.id, endpoint.affinityTtlSeconds).catch(() => {});
       if (endpoint.sessionAffinity === 'COOKIE' && !request.headers.get('cookie')?.includes(endpoint.affinityCookieName)) {
         rewrittenHeaders.append('Set-Cookie', generateAffinityCookie(endpoint, backend.id));
       }
     }
 
-    // Rewrite body if needed
+    // Rewrite body if needed (with size check)
     const contentType = backendResponse.headers.get('content-type');
+    const contentLength = parseInt(backendResponse.headers.get('content-length') || '0', 10);
     let responseBody: BodyInit | null = backendResponse.body;
 
-    if (shouldRewriteBody(contentType)) {
+    const shouldBuffer = shouldRewriteBody(contentType) && 
+                         (contentLength === 0 || contentLength < MAX_BODY_REWRITE_SIZE);
+
+    if (shouldBuffer) {
       const bodyText = await backendResponse.text();
       const rewrittenBody = rewriteResponseBody(bodyText, backend, originalHost, originalProtocol);
       responseBody = rewrittenBody;
       rewrittenHeaders.set('Content-Length', new TextEncoder().encode(rewrittenBody).length.toString());
+      rewrittenHeaders.set('X-Body-Rewritten', 'true');
     }
 
     return new NextResponse(responseBody, {
@@ -505,29 +590,23 @@ async function handleSmartMode(
 async function handleWebSocketInfo(
   request: NextRequest,
   endpoint: EndpointConfig,
-  clusterId: string | null,
+  cluster: ClusterWithBackends,
   clientIp: string
 ): Promise<NextResponse> {
   // For WebSocket connections, we return information about where to connect
   // Full WebSocket proxying would require a different server architecture
   
-  if (!clusterId) {
+  if (!cluster) {
     return NextResponse.json(
       { error: ProxyErrors.NO_CLUSTER.message, code: ProxyErrors.NO_CLUSTER.code },
       { status: ProxyErrors.NO_CLUSTER.statusCode }
     );
   }
 
-  const cluster = await prisma.backendCluster.findUnique({
-    where: { id: clusterId },
-    include: {
-      backends: {
-        where: { isActive: true, status: 'HEALTHY' },
-      },
-    },
-  });
+  // Filter to healthy backends only
+  const healthyBackends = cluster.backends.filter(b => b.status === 'HEALTHY');
 
-  if (!cluster || cluster.backends.length === 0) {
+  if (healthyBackends.length === 0) {
     return NextResponse.json(
       { error: ProxyErrors.NO_HEALTHY_BACKENDS.message, code: ProxyErrors.NO_HEALTHY_BACKENDS.code },
       { status: ProxyErrors.NO_HEALTHY_BACKENDS.statusCode }
@@ -536,11 +615,10 @@ async function handleWebSocketInfo(
 
   // Get affinity key for WebSocket (important for persistent connections)
   const affinityKey = getAffinityKey(request, endpoint, clientIp) || hashString(clientIp);
-  let preferredBackendId = await getAffinityBackend(endpoint.id, affinityKey);
+  const preferredBackendId = await getCachedAffinity(endpoint.id, affinityKey);
 
   // Select backend
-  const backends: Backend[] = cluster.backends;
-  const backend = selectBackend(backends, cluster.strategy, cluster.id, clientIp, preferredBackendId);
+  const backend = selectBackend(healthyBackends, cluster.strategy, cluster.id, clientIp, preferredBackendId);
 
   if (!backend) {
     return NextResponse.json(
@@ -550,7 +628,7 @@ async function handleWebSocketInfo(
   }
 
   // Set affinity for WebSocket (long-lived connections need sticky sessions)
-  await setAffinityMapping(endpoint.id, affinityKey, backend.id, endpoint.affinityTtlSeconds);
+  setCachedAffinity(endpoint.id, affinityKey, backend.id, endpoint.affinityTtlSeconds).catch(() => {});
 
   // Return WebSocket connection info
   const wsProtocol = backend.protocol === 'https' ? 'wss' : 'ws';

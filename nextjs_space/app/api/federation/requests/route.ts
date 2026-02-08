@@ -1,150 +1,168 @@
+/**
+ * Federation Partnership Requests API
+ * 
+ * GET  - List incoming partnership requests
+ * POST - Receive a partnership request from another node
+ */
+
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth-options';
 import { prisma } from '@/lib/db';
-import { createAuditLog, getClientIP } from '@/lib/audit';
-import crypto from 'crypto';
+import { createAuditLog } from '@/lib/audit';
 
-// GET - List all federation requests (incoming and outgoing)
 export async function GET(request: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
-    if (!session?.user?.id) {
+    if (!session?.user?.email) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const orgId = session.user.currentOrgId;
-    if (!orgId) {
-      return NextResponse.json({ error: 'No organization selected' }, { status: 400 });
+    const user = await prisma.user.findUnique({
+      where: { email: session.user.email },
+      include: { memberships: true },
+    });
+
+    if (!user || user.memberships.length === 0) {
+      return NextResponse.json({ error: 'No organization found' }, { status: 404 });
     }
 
+    const orgId = user.memberships[0].orgId;
+
+    // Get all requests (both incoming and outgoing)
     const requests = await prisma.federationRequest.findMany({
       where: { orgId },
       orderBy: { createdAt: 'desc' },
+      take: 50,
     });
 
-    return NextResponse.json({ requests });
+    return NextResponse.json({
+      requests: requests.map(r => ({
+        id: r.id,
+        type: r.requestType,
+        requesterNodeId: r.requesterNodeId,
+        requesterNodeName: r.requesterNodeName,
+        requesterNodeUrl: r.requesterNodeUrl,
+        targetNodeUrl: r.targetNodeUrl,
+        status: r.status,
+        message: r.message,
+        rejectionReason: r.rejectionReason,
+        expiresAt: r.expiresAt,
+        createdAt: r.createdAt,
+        acknowledgedAt: r.acknowledgedAt,
+        rejectedAt: r.rejectedAt,
+      })),
+    });
   } catch (error) {
-    console.error('Error fetching federation requests:', error);
-    return NextResponse.json({ error: 'Failed to fetch requests' }, { status: 500 });
+    console.error('Error fetching requests:', error);
+    return NextResponse.json(
+      { error: 'Failed to fetch requests' },
+      { status: 500 }
+    );
   }
 }
 
-// POST - Send a partnership request to another TCP (become a Partner)
+// Receive incoming partnership request (from another TCP node)
 export async function POST(request: NextRequest) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-
-    const orgId = session.user.currentOrgId;
-    if (!orgId) {
-      return NextResponse.json({ error: 'No organization selected' }, { status: 400 });
-    }
-
     const body = await request.json();
-    const { targetNodeUrl, message } = body;
+    const {
+      requesterNodeId,
+      requesterNodeName,
+      requesterNodeUrl,
+      secretKey,
+      message,
+    } = body;
 
-    if (!targetNodeUrl) {
-      return NextResponse.json({ error: 'Target node URL is required' }, { status: 400 });
+    if (!requesterNodeId || !requesterNodeName || !requesterNodeUrl || !secretKey) {
+      return NextResponse.json(
+        { error: 'Missing required fields' },
+        { status: 400 }
+      );
     }
 
-    // Get this node's config
-    const myConfig = await prisma.federationConfig.findUnique({
-      where: { orgId },
+    // Find a config to attach this request to
+    // In a real scenario, you'd determine which org based on target URL or other factors
+    const configs = await prisma.federationConfig.findMany({
+      where: { isActive: true },
+      take: 1,
     });
 
-    if (!myConfig) {
-      return NextResponse.json({ error: 'Federation not configured for this node' }, { status: 400 });
+    if (configs.length === 0) {
+      return NextResponse.json(
+        { error: 'No federation configuration found on this node' },
+        { status: 404 }
+      );
     }
 
-    if (myConfig.role === 'PARTNER') {
-      return NextResponse.json({ error: 'This node is already a Partner' }, { status: 400 });
-    }
+    const config = configs[0];
 
-    // Generate a shared secret for this partnership
-    const secretKey = crypto.randomBytes(32).toString('hex');
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
-
-    // Create outgoing request
-    const federationRequest = await prisma.federationRequest.create({
-      data: {
-        orgId,
-        requestType: 'OUTGOING',
-        requesterNodeId: myConfig.nodeId,
-        requesterNodeName: myConfig.nodeName,
-        requesterNodeUrl: myConfig.nodeUrl,
-        targetNodeUrl,
+    // Check if we already have a request from this node
+    const existingRequest = await prisma.federationRequest.findFirst({
+      where: {
+        orgId: config.orgId,
+        requesterNodeId,
         status: 'PENDING',
-        secretKey,
-        message,
-        expiresAt,
       },
     });
 
-    // Send request to target node
-    try {
-      const response = await fetch(`${targetNodeUrl}/api/federation/requests/incoming`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          requesterNodeId: myConfig.nodeId,
-          requesterNodeName: myConfig.nodeName,
-          requesterNodeUrl: myConfig.nodeUrl,
-          secretKey,
-          message,
-          expiresAt: expiresAt.toISOString(),
-        }),
-      });
-
-      if (!response.ok) {
-        // Update request as failed
-        await prisma.federationRequest.update({
-          where: { id: federationRequest.id },
-          data: {
-            status: 'EXPIRED',
-            metadata: { error: 'Failed to reach target node' },
-          },
-        });
-        return NextResponse.json({ error: 'Failed to reach target node' }, { status: 502 });
-      }
-
-      const targetResponse = await response.json();
-      
-      // Update request with target node info
-      await prisma.federationRequest.update({
-        where: { id: federationRequest.id },
-        data: {
-          targetNodeId: targetResponse.nodeId,
-          metadata: { targetNodeName: targetResponse.nodeName },
-        },
-      });
-    } catch (fetchError) {
-      // Network error - update request but keep it pending
-      await prisma.federationRequest.update({
-        where: { id: federationRequest.id },
-        data: {
-          metadata: { error: 'Network error: unable to reach target node' },
-        },
-      });
+    if (existingRequest) {
+      return NextResponse.json(
+        { error: 'A pending request from this node already exists' },
+        { status: 409 }
+      );
     }
 
-    await createAuditLog({
-      orgId,
-      userId: session.user.id,
-      action: 'federation.request.sent',
-      resourceType: 'federation_request',
-      resourceId: federationRequest.id,
-      details: { targetNodeUrl, message },
-      ipAddress: getClientIP(request),
+    // Check if already a partner
+    const existingPartner = await prisma.federationPartner.findFirst({
+      where: {
+        orgId: config.orgId,
+        nodeId: requesterNodeId,
+      },
     });
 
-    return NextResponse.json({ request: federationRequest });
+    if (existingPartner) {
+      return NextResponse.json(
+        { error: 'This node is already a partner' },
+        { status: 409 }
+      );
+    }
+
+    // Create incoming request
+    const federationRequest = await prisma.federationRequest.create({
+      data: {
+        orgId: config.orgId,
+        requestType: 'INCOMING',
+        requesterNodeId,
+        requesterNodeName,
+        requesterNodeUrl,
+        targetNodeId: config.nodeId,
+        targetNodeUrl: config.nodeUrl,
+        status: 'PENDING',
+        secretKey,
+        message: message || `Partnership request from ${requesterNodeName}`,
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24 hours
+      },
+    });
+
+    await createAuditLog({
+      orgId: config.orgId,
+      action: 'federation.request.received',
+      resourceType: 'federation_request',
+      resourceId: federationRequest.id,
+      details: { requesterNodeId, requesterNodeName, requesterNodeUrl },
+    });
+
+    return NextResponse.json({
+      success: true,
+      message: 'Partnership request received',
+      requestId: federationRequest.id,
+    });
   } catch (error) {
-    console.error('Error sending partnership request:', error);
-    return NextResponse.json({ error: 'Failed to send partnership request' }, { status: 500 });
+    console.error('Error receiving partnership request:', error);
+    return NextResponse.json(
+      { error: 'Failed to process partnership request' },
+      { status: 500 }
+    );
   }
 }

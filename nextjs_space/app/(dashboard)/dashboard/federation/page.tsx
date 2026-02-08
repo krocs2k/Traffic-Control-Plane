@@ -1,42 +1,33 @@
-"use client";
+'use client';
 
+import { useState, useEffect } from 'react';
 import { useSession } from 'next-auth/react';
-import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import {
-  Network,
-  Plus,
-  RefreshCw,
-  Send,
-  Check,
-  X,
-  ArrowUp,
-  Settings,
-  Trash2,
-  Clock,
-  Activity,
-  AlertCircle,
-  CheckCircle,
-  XCircle,
-  Loader2,
-  Copy,
-  Globe,
-  Users,
-  ChevronDown,
-  ArrowRightLeft,
-} from 'lucide-react';
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
-import { Textarea } from '@/components/ui/textarea';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogFooter,
 } from '@/components/ui/dialog';
 import {
   AlertDialog,
@@ -56,25 +47,52 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
+import { Progress } from '@/components/ui/progress';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
+import {
+  Network,
+  Server,
+  Globe,
+  Shield,
+  Activity,
+  CheckCircle2,
+  XCircle,
+  AlertCircle,
+  RefreshCw,
+  Plus,
+  Settings,
+  Link,
+  Unlink,
+  Copy,
+  Eye,
+  EyeOff,
+  Database,
+  Zap,
+  Clock,
+  BarChart3,
+} from 'lucide-react';
 
 interface FederationConfig {
-  id: string;
   nodeId: string;
   nodeName: string;
   nodeUrl: string;
   role: 'PRINCIPLE' | 'PARTNER' | 'STANDALONE';
   principleNodeId?: string;
   principleUrl?: string;
-  lastHeartbeat?: string;
   isActive: boolean;
+  lastHeartbeat: string | null;
+}
+
+interface FederationPeer {
+  nodeId: string;
+  nodeName: string;
+  nodeUrl: string;
+  status: 'HEALTHY' | 'UNHEALTHY' | 'UNKNOWN';
+  lastHeartbeat: string | null;
+  latencyMs?: number;
+  currentLoad?: number;
+  isLocal?: boolean;
 }
 
 interface FederationPartner {
@@ -83,305 +101,231 @@ interface FederationPartner {
   nodeName: string;
   nodeUrl: string;
   isActive: boolean;
-  lastSyncAt?: string;
-  lastHeartbeat?: string;
-  syncStatus: string;
+  status: string;
+  lastHeartbeat: string | null;
+  lastSyncAt: string | null;
   failedSyncCount: number;
 }
 
 interface FederationRequest {
   id: string;
-  requestType: string;
+  type: 'INCOMING' | 'OUTGOING';
   requesterNodeId: string;
   requesterNodeName: string;
   requesterNodeUrl: string;
-  targetNodeId?: string;
-  targetNodeUrl?: string;
   status: string;
   message?: string;
+  expiresAt: string;
   createdAt: string;
-  acknowledgedAt?: string;
-  rejectedAt?: string;
-  rejectionReason?: string;
 }
 
-interface SyncLog {
-  id: string;
-  direction: string;
-  syncType: string;
-  status: string;
-  entitiesSynced: Record<string, number>;
-  errorMessage?: string;
-  startedAt: string;
-  completedAt?: string;
-  durationMs?: number;
-  partner?: { nodeName: string; nodeUrl: string };
+interface CacheStats {
+  hits: number;
+  misses: number;
+  size: number;
+  hitRate: number;
+  memoryUsageMB: number;
 }
 
-interface PromotionRequest {
-  id: string;
-  requesterNodeId: string;
-  requesterNodeUrl: string;
-  status: string;
-  responseDeadline: string;
-  reason?: string;
-  createdAt: string;
+interface FederationStats {
+  nodeId: string;
+  role: string;
+  peerCount: number;
+  healthyPeers: number;
+  totalForwarded: number;
+  totalReceived: number;
+  avgLatencyToPeers: number;
+}
+
+interface StatsData {
+  federation: FederationStats | null;
+  peers: FederationPeer[];
+  cache: Record<string, CacheStats>;
+  metricsQueue: {
+    endpointQueueSize: number;
+    trafficQueueSize: number;
+    totalFlushed: number;
+    lastFlushAt: number | null;
+    flushErrors: number;
+  };
+  system: {
+    heapUsedMB: number;
+    heapTotalMB: number;
+    rssMB: number;
+    externalMB: number;
+    uptime: number;
+  };
+  recentSyncs: Array<{
+    id: string;
+    partnerName?: string;
+    direction: string;
+    syncType: string;
+    status: string;
+    durationMs?: number;
+    startedAt: string;
+  }>;
 }
 
 export default function FederationPage() {
-  const { data: session } = useSession() || {};
+  const { data: session, status } = useSession() || {};
+  const router = useRouter();
+
   const [loading, setLoading] = useState(true);
+  const [configured, setConfigured] = useState(false);
   const [config, setConfig] = useState<FederationConfig | null>(null);
+  const [peers, setPeers] = useState<FederationPeer[]>([]);
   const [partners, setPartners] = useState<FederationPartner[]>([]);
   const [requests, setRequests] = useState<FederationRequest[]>([]);
-  const [syncLogs, setSyncLogs] = useState<SyncLog[]>([]);
-  const [promotionRequests, setPromotionRequests] = useState<PromotionRequest[]>([]);
+  const [stats, setStats] = useState<StatsData | null>(null);
 
   // Dialog states
-  const [configDialogOpen, setConfigDialogOpen] = useState(false);
+  const [setupDialogOpen, setSetupDialogOpen] = useState(false);
+  const [addPeerDialogOpen, setAddPeerDialogOpen] = useState(false);
+  const [showSecretKey, setShowSecretKey] = useState(false);
   const [requestDialogOpen, setRequestDialogOpen] = useState(false);
-  const [promoteDialogOpen, setPromoteDialogOpen] = useState(false);
-  const [deletePartnerDialog, setDeletePartnerDialog] = useState<string | null>(null);
+  const [selectedRequest, setSelectedRequest] = useState<FederationRequest | null>(null);
 
   // Form states
-  const [configForm, setConfigForm] = useState({ nodeName: '', nodeUrl: '' });
-  const [requestForm, setRequestForm] = useState({ targetNodeUrl: '', message: '' });
-  const [selectedPartner, setSelectedPartner] = useState<string | null>(null);
-  const [promotionReason, setPromotionReason] = useState('');
+  const [setupForm, setSetupForm] = useState<{
+    nodeName: string;
+    nodeUrl: string;
+    role: 'PRINCIPLE' | 'PARTNER' | 'STANDALONE';
+  }>({
+    nodeName: '',
+    nodeUrl: '',
+    role: 'STANDALONE',
+  });
+  const [peerForm, setPeerForm] = useState({
+    targetNodeUrl: '',
+    message: '',
+  });
 
-  // Action states
-  const [syncing, setSyncing] = useState(false);
-  const [actionLoading, setActionLoading] = useState(false);
+  const [secretKey, setSecretKey] = useState('');
 
   useEffect(() => {
-    if (session?.user?.currentOrgId) {
+    if (status === 'unauthenticated') {
+      router.push('/login');
+    } else if (status === 'authenticated') {
       fetchFederationData();
-      // Poll for updates every 10 seconds
-      const interval = setInterval(fetchFederationData, 10000);
-      return () => clearInterval(interval);
     }
-  }, [session?.user?.currentOrgId]);
+  }, [status, router]);
 
   const fetchFederationData = async () => {
     try {
-      const res = await fetch('/api/federation');
-      if (res.ok) {
-        const data = await res.json();
-        setConfig(data.config);
-        setPartners(data.partners || []);
-        setRequests(data.pendingRequests || []);
-        setSyncLogs(data.recentSyncs || []);
-        if (data.config) {
-          setConfigForm({ nodeName: data.config.nodeName, nodeUrl: data.config.nodeUrl });
+      setLoading(true);
+
+      // Fetch main federation config
+      const configRes = await fetch('/api/federation');
+      const configData = await configRes.json();
+
+      setConfigured(configData.configured);
+      setConfig(configData.config || null);
+      setPeers(configData.peers || []);
+      setPartners(configData.partners || []);
+      setSecretKey(configData.config?.secretKey || '');
+
+      // Fetch peers and requests
+      if (configData.configured) {
+        const peersRes = await fetch('/api/federation/peers');
+        const peersData = await peersRes.json();
+        setPartners(peersData.partners || []);
+        setRequests(peersData.pendingRequests || []);
+
+        // Fetch stats
+        const statsRes = await fetch('/api/federation/stats');
+        const statsData = await statsRes.json();
+        setStats(statsData);
+        if (statsData.peers) {
+          setPeers(statsData.peers);
         }
       }
     } catch (error) {
-      console.error('Failed to fetch federation data:', error);
+      console.error('Error fetching federation data:', error);
+      toast.error('Failed to load federation data');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleSaveConfig = async () => {
-    if (!configForm.nodeName || !configForm.nodeUrl) {
-      toast.error('Node name and URL are required');
-      return;
-    }
-
-    setActionLoading(true);
+  const handleSetupFederation = async () => {
     try {
       const res = await fetch('/api/federation', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(configForm),
+        body: JSON.stringify(setupForm),
       });
 
-      if (res.ok) {
-        const data = await res.json();
-        setConfig(data.config);
-        setConfigDialogOpen(false);
-        toast.success('Federation configuration saved');
-      } else {
-        const error = await res.json();
-        toast.error(error.error || 'Failed to save configuration');
-      }
-    } catch (error) {
-      toast.error('Failed to save configuration');
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  const handleSendRequest = async () => {
-    if (!requestForm.targetNodeUrl) {
-      toast.error('Target node URL is required');
-      return;
-    }
-
-    setActionLoading(true);
-    try {
-      const res = await fetch('/api/federation/requests', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestForm),
-      });
+      const data = await res.json();
 
       if (res.ok) {
-        setRequestDialogOpen(false);
-        setRequestForm({ targetNodeUrl: '', message: '' });
-        toast.success('Partnership request sent');
+        toast.success('Federation configured successfully');
+        setSetupDialogOpen(false);
+        setSecretKey(data.config?.secretKey || '');
         fetchFederationData();
       } else {
-        const error = await res.json();
-        toast.error(error.error || 'Failed to send request');
+        toast.error(data.error || 'Failed to configure federation');
       }
     } catch (error) {
-      toast.error('Failed to send request');
-    } finally {
-      setActionLoading(false);
+      toast.error('Failed to configure federation');
     }
   };
 
-  const handleRequestAction = async (requestId: string, action: 'acknowledge' | 'reject', reason?: string) => {
-    setActionLoading(true);
+  const handleAddPeer = async () => {
+    try {
+      const res = await fetch('/api/federation/peers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(peerForm),
+      });
+
+      const data = await res.json();
+
+      if (res.ok) {
+        toast.success(data.message || 'Partnership request sent');
+        setAddPeerDialogOpen(false);
+        setPeerForm({ targetNodeUrl: '', message: '' });
+        fetchFederationData();
+      } else {
+        toast.error(data.error || 'Failed to send request');
+      }
+    } catch (error) {
+      toast.error('Failed to send partnership request');
+    }
+  };
+
+  const handleRequestAction = async (requestId: string, action: 'accept' | 'reject') => {
     try {
       const res = await fetch(`/api/federation/requests/${requestId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, rejectionReason: reason }),
+        body: JSON.stringify({ action }),
       });
 
+      const data = await res.json();
+
       if (res.ok) {
-        toast.success(action === 'acknowledge' ? 'Request acknowledged' : 'Request rejected');
+        toast.success(data.message || `Request ${action}ed`);
+        setRequestDialogOpen(false);
         fetchFederationData();
       } else {
-        const error = await res.json();
-        toast.error(error.error || 'Failed to process request');
+        toast.error(data.error || `Failed to ${action} request`);
       }
     } catch (error) {
-      toast.error('Failed to process request');
-    } finally {
-      setActionLoading(false);
+      toast.error(`Failed to ${action} request`);
     }
   };
 
-  const handleSync = async (partnerId?: string) => {
-    setSyncing(true);
-    try {
-      const res = await fetch('/api/federation/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ partnerId, syncType: 'FULL' }),
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        toast.success(`Sync completed for ${data.results?.length || 0} partner(s)`);
-        fetchFederationData();
-      } else {
-        const error = await res.json();
-        toast.error(error.error || 'Sync failed');
-      }
-    } catch (error) {
-      toast.error('Sync failed');
-    } finally {
-      setSyncing(false);
-    }
-  };
-
-  const handlePromotePartner = async () => {
-    if (!selectedPartner) return;
-
-    setActionLoading(true);
-    try {
-      const res = await fetch('/api/federation/promote', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'promote', partnerId: selectedPartner }),
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        toast.success(`${data.newPrinciple} is now the Principle`);
-        setPromoteDialogOpen(false);
-        setSelectedPartner(null);
-        fetchFederationData();
-      } else {
-        const error = await res.json();
-        toast.error(error.error || 'Failed to promote partner');
-      }
-    } catch (error) {
-      toast.error('Failed to promote partner');
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  const handleRequestPromotion = async () => {
-    setActionLoading(true);
-    try {
-      const res = await fetch('/api/federation/promote', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'request', reason: promotionReason }),
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        if (data.autoPromoted) {
-          toast.success('Automatically promoted to Principle (Principle unreachable)');
-        } else {
-          toast.success('Promotion request sent. Waiting for response...');
-        }
-        setPromoteDialogOpen(false);
-        setPromotionReason('');
-        fetchFederationData();
-      } else {
-        const error = await res.json();
-        toast.error(error.error || 'Failed to request promotion');
-      }
-    } catch (error) {
-      toast.error('Failed to request promotion');
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  const handleRemovePartner = async (partnerId: string) => {
-    setActionLoading(true);
-    try {
-      const res = await fetch(`/api/federation/partners?id=${partnerId}`, {
-        method: 'DELETE',
-      });
-
-      if (res.ok) {
-        toast.success('Partner removed');
-        setDeletePartnerDialog(null);
-        fetchFederationData();
-      } else {
-        const error = await res.json();
-        toast.error(error.error || 'Failed to remove partner');
-      }
-    } catch (error) {
-      toast.error('Failed to remove partner');
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  const copyNodeId = () => {
-    if (config?.nodeId) {
-      navigator.clipboard.writeText(config.nodeId);
-      toast.success('Node ID copied');
-    }
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+    toast.success('Copied to clipboard');
   };
 
   const getRoleBadge = (role: string) => {
     switch (role) {
       case 'PRINCIPLE':
-        return <Badge className="bg-blue-500">Principle</Badge>;
+        return <Badge className="bg-purple-500">Principle</Badge>;
       case 'PARTNER':
-        return <Badge className="bg-green-500">Partner</Badge>;
+        return <Badge className="bg-blue-500">Partner</Badge>;
       default:
         return <Badge variant="secondary">Standalone</Badge>;
     }
@@ -389,552 +333,709 @@ export default function FederationPage() {
 
   const getStatusBadge = (status: string) => {
     switch (status) {
-      case 'PENDING':
-        return <Badge variant="outline" className="text-yellow-600 border-yellow-600"><Clock className="w-3 h-3 mr-1" />Pending</Badge>;
-      case 'ACKNOWLEDGED':
-        return <Badge className="bg-green-500"><CheckCircle className="w-3 h-3 mr-1" />Acknowledged</Badge>;
-      case 'REJECTED':
-        return <Badge variant="destructive"><XCircle className="w-3 h-3 mr-1" />Rejected</Badge>;
-      case 'COMPLETED':
-        return <Badge className="bg-green-500"><CheckCircle className="w-3 h-3 mr-1" />Completed</Badge>;
-      case 'FAILED':
-        return <Badge variant="destructive"><XCircle className="w-3 h-3 mr-1" />Failed</Badge>;
-      case 'IN_PROGRESS':
-        return <Badge className="bg-blue-500"><Loader2 className="w-3 h-3 mr-1 animate-spin" />In Progress</Badge>;
+      case 'HEALTHY':
+        return <Badge className="bg-green-500">Healthy</Badge>;
+      case 'UNHEALTHY':
+        return <Badge className="bg-red-500">Unhealthy</Badge>;
       default:
-        return <Badge variant="secondary">{status}</Badge>;
+        return <Badge variant="secondary">Unknown</Badge>;
     }
   };
 
-  if (loading) {
+  const formatUptime = (seconds: number) => {
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
+    if (days > 0) return `${days}d ${hours}h`;
+    if (hours > 0) return `${hours}h ${mins}m`;
+    return `${mins}m`;
+  };
+
+  if (status === 'loading' || loading) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        <RefreshCw className="h-8 w-8 animate-spin text-muted-foreground" />
       </div>
     );
   }
 
-  const incomingRequests = requests.filter((r) => r.requestType === 'INCOMING');
-  const outgoingRequests = requests.filter((r) => r.requestType === 'OUTGOING');
-
   return (
-    <div className="space-y-6">
+    <div className="p-6 space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Federation</h1>
-          <p className="text-muted-foreground">Connect multiple Traffic Control Planes to work as a cluster</p>
+          <h1 className="text-3xl font-bold tracking-tight">Federation</h1>
+          <p className="text-muted-foreground">
+            Manage distributed Traffic Control Plane clustering
+          </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex gap-2">
           <Button variant="outline" onClick={fetchFederationData}>
             <RefreshCw className="h-4 w-4 mr-2" />
             Refresh
           </Button>
-          {!config && (
-            <Button onClick={() => setConfigDialogOpen(true)}>
+          {!configured && (
+            <Button onClick={() => setSetupDialogOpen(true)}>
               <Settings className="h-4 w-4 mr-2" />
-              Configure Node
+              Configure Federation
+            </Button>
+          )}
+          {configured && config?.role === 'PRINCIPLE' && (
+            <Button onClick={() => setAddPeerDialogOpen(true)}>
+              <Plus className="h-4 w-4 mr-2" />
+              Add Partner
             </Button>
           )}
         </div>
       </div>
 
-      {/* Node Configuration Card */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle className="flex items-center gap-2">
-                <Network className="h-5 w-5" />
-                This Node
-              </CardTitle>
-              <CardDescription>Federation configuration for this Traffic Control Plane</CardDescription>
-            </div>
-            {config && (
-              <Button variant="outline" size="sm" onClick={() => setConfigDialogOpen(true)}>
-                <Settings className="h-4 w-4 mr-2" />
-                Edit
-              </Button>
-            )}
+      {!configured ? (
+        // Not Configured State
+        <Card className="border-dashed">
+          <CardContent className="flex flex-col items-center justify-center py-12">
+            <Network className="h-16 w-16 text-muted-foreground mb-4" />
+            <h3 className="text-xl font-semibold mb-2">Federation Not Configured</h3>
+            <p className="text-muted-foreground text-center max-w-md mb-6">
+              Configure this node to participate in a federated Traffic Control Plane cluster.
+              Enable distributed routing, load balancing, and failover across multiple instances.
+            </p>
+            <Button onClick={() => setSetupDialogOpen(true)}>
+              <Settings className="h-4 w-4 mr-2" />
+              Configure Federation
+            </Button>
+          </CardContent>
+        </Card>
+      ) : (
+        <>
+          {/* Node Info & Stats */}
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Node Role</CardTitle>
+                <Shield className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                {getRoleBadge(config?.role || 'STANDALONE')}
+                <p className="text-xs text-muted-foreground mt-2">
+                  {config?.nodeName}
+                </p>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Cluster Peers</CardTitle>
+                <Server className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">
+                  {stats?.federation?.healthyPeers || 0}/{stats?.federation?.peerCount || peers.length}
+                </div>
+                <p className="text-xs text-muted-foreground">healthy / total</p>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Requests Forwarded</CardTitle>
+                <Zap className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">
+                  {stats?.federation?.totalForwarded || 0}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  received: {stats?.federation?.totalReceived || 0}
+                </p>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">System Uptime</CardTitle>
+                <Clock className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">
+                  {stats?.system ? formatUptime(stats.system.uptime) : '-'}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Memory: {stats?.system?.heapUsedMB || 0}MB / {stats?.system?.heapTotalMB || 0}MB
+                </p>
+              </CardContent>
+            </Card>
           </div>
-        </CardHeader>
-        <CardContent>
-          {config ? (
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-              <div>
-                <Label className="text-muted-foreground text-xs">Node Name</Label>
-                <p className="font-medium">{config.nodeName}</p>
-              </div>
-              <div>
-                <Label className="text-muted-foreground text-xs">Node URL</Label>
-                <p className="font-medium text-sm break-all">{config.nodeUrl}</p>
-              </div>
-              <div>
-                <Label className="text-muted-foreground text-xs">Node ID</Label>
-                <div className="flex items-center gap-2">
-                  <code className="text-xs bg-muted px-2 py-1 rounded">{config.nodeId.slice(0, 12)}...</code>
-                  <Button variant="ghost" size="icon" className="h-6 w-6" onClick={copyNodeId}>
-                    <Copy className="h-3 w-3" />
-                  </Button>
-                </div>
-              </div>
-              <div>
-                <Label className="text-muted-foreground text-xs">Role</Label>
-                <div className="mt-1">{getRoleBadge(config.role)}</div>
-              </div>
-              {config.role === 'PARTNER' && config.principleUrl && (
-                <div className="md:col-span-2">
-                  <Label className="text-muted-foreground text-xs">Connected to Principle</Label>
-                  <p className="font-medium text-sm">{config.principleUrl}</p>
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="text-center py-8">
-              <Globe className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-              <p className="text-muted-foreground mb-4">Federation not configured</p>
-              <Button onClick={() => setConfigDialogOpen(true)}>
-                <Settings className="h-4 w-4 mr-2" />
-                Configure Federation
-              </Button>
-            </div>
-          )}
-        </CardContent>
-      </Card>
 
-      {config && (
-        <Tabs defaultValue="partners" className="space-y-4">
-          <TabsList>
-            <TabsTrigger value="partners">
-              <Users className="h-4 w-4 mr-2" />
-              Partners {partners.length > 0 && `(${partners.length})`}
-            </TabsTrigger>
-            <TabsTrigger value="requests">
-              <Send className="h-4 w-4 mr-2" />
-              Requests {requests.length > 0 && `(${requests.length})`}
-            </TabsTrigger>
-            <TabsTrigger value="sync">
-              <ArrowRightLeft className="h-4 w-4 mr-2" />
-              Sync History
-            </TabsTrigger>
-          </TabsList>
+          <Tabs defaultValue="peers" className="space-y-4">
+            <TabsList>
+              <TabsTrigger value="peers">Cluster Peers</TabsTrigger>
+              <TabsTrigger value="requests">
+                Requests
+                {requests.length > 0 && (
+                  <Badge variant="destructive" className="ml-2">
+                    {requests.length}
+                  </Badge>
+                )}
+              </TabsTrigger>
+              <TabsTrigger value="performance">Performance</TabsTrigger>
+              <TabsTrigger value="config">Configuration</TabsTrigger>
+            </TabsList>
 
-          {/* Partners Tab */}
-          <TabsContent value="partners">
-            <Card>
-              <CardHeader>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <CardTitle>Connected Partners</CardTitle>
+            {/* Peers Tab */}
+            <TabsContent value="peers" className="space-y-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Cluster Members</CardTitle>
+                  <CardDescription>
+                    Active nodes in the federation cluster with health status
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {peers.length === 0 ? (
+                    <div className="text-center py-8 text-muted-foreground">
+                      No peers in cluster yet
+                    </div>
+                  ) : (
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Node</TableHead>
+                          <TableHead>URL</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead>Latency</TableHead>
+                          <TableHead>Load</TableHead>
+                          <TableHead>Last Heartbeat</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {peers.map((peer) => (
+                          <TableRow key={peer.nodeId}>
+                            <TableCell className="font-medium">
+                              <div className="flex items-center gap-2">
+                                {peer.nodeName}
+                                {peer.isLocal && (
+                                  <Badge variant="outline" className="text-xs">
+                                    This Node
+                                  </Badge>
+                                )}
+                              </div>
+                            </TableCell>
+                            <TableCell className="font-mono text-xs">
+                              {peer.nodeUrl}
+                            </TableCell>
+                            <TableCell>{getStatusBadge(peer.status)}</TableCell>
+                            <TableCell>
+                              {peer.latencyMs ? `${peer.latencyMs}ms` : '-'}
+                            </TableCell>
+                            <TableCell>
+                              {peer.currentLoad !== undefined ? (
+                                <div className="flex items-center gap-2">
+                                  <Progress value={peer.currentLoad} className="w-16 h-2" />
+                                  <span className="text-xs">{peer.currentLoad}%</span>
+                                </div>
+                              ) : (
+                                '-'
+                              )}
+                            </TableCell>
+                            <TableCell className="text-xs text-muted-foreground">
+                              {peer.lastHeartbeat
+                                ? new Date(peer.lastHeartbeat).toLocaleString()
+                                : 'Never'}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* Partners (if Principle) */}
+              {config?.role === 'PRINCIPLE' && partners.length > 0 && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Partner Nodes</CardTitle>
                     <CardDescription>
-                      {config.role === 'PRINCIPLE'
-                        ? 'Partner nodes that receive configuration from this Principle'
-                        : 'This node is a Partner - configuration is received from the Principle'}
+                      Nodes that receive configuration sync from this Principle
                     </CardDescription>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {config.role === 'PRINCIPLE' && partners.length > 0 && (
-                      <Button onClick={() => handleSync()} disabled={syncing}>
-                        {syncing ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-2" />}
-                        Sync All
-                      </Button>
-                    )}
-                    {config.role !== 'PARTNER' && (
-                      <Button variant="outline" onClick={() => setRequestDialogOpen(true)}>
-                        <Plus className="h-4 w-4 mr-2" />
-                        Request Partnership
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              </CardHeader>
-              <CardContent>
-                {config.role === 'PRINCIPLE' && partners.length > 0 ? (
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Node Name</TableHead>
-                        <TableHead>URL</TableHead>
-                        <TableHead>Status</TableHead>
-                        <TableHead>Last Sync</TableHead>
-                        <TableHead>Last Heartbeat</TableHead>
-                        <TableHead className="w-[100px]">Actions</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {partners.map((partner) => (
-                        <TableRow key={partner.id}>
-                          <TableCell className="font-medium">{partner.nodeName}</TableCell>
-                          <TableCell className="text-sm text-muted-foreground">{partner.nodeUrl}</TableCell>
-                          <TableCell>{getStatusBadge(partner.syncStatus)}</TableCell>
-                          <TableCell className="text-sm">
-                            {partner.lastSyncAt ? new Date(partner.lastSyncAt).toLocaleString() : 'Never'}
-                          </TableCell>
-                          <TableCell className="text-sm">
-                            {partner.lastHeartbeat ? new Date(partner.lastHeartbeat).toLocaleString() : 'Never'}
-                          </TableCell>
-                          <TableCell>
-                            <DropdownMenu>
-                              <DropdownMenuTrigger asChild>
-                                <Button variant="ghost" size="icon">
-                                  <ChevronDown className="h-4 w-4" />
-                                </Button>
-                              </DropdownMenuTrigger>
-                              <DropdownMenuContent align="end">
-                                <DropdownMenuItem onClick={() => handleSync(partner.id)}>
-                                  <RefreshCw className="h-4 w-4 mr-2" />
-                                  Sync Now
-                                </DropdownMenuItem>
-                                <DropdownMenuItem onClick={() => { setSelectedPartner(partner.id); setPromoteDialogOpen(true); }}>
-                                  <ArrowUp className="h-4 w-4 mr-2" />
-                                  Promote to Principle
-                                </DropdownMenuItem>
-                                <DropdownMenuItem
-                                  className="text-red-600"
-                                  onClick={() => setDeletePartnerDialog(partner.id)}
-                                >
-                                  <Trash2 className="h-4 w-4 mr-2" />
-                                  Remove
-                                </DropdownMenuItem>
-                              </DropdownMenuContent>
-                            </DropdownMenu>
-                          </TableCell>
+                  </CardHeader>
+                  <CardContent>
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Partner</TableHead>
+                          <TableHead>Sync Status</TableHead>
+                          <TableHead>Last Sync</TableHead>
+                          <TableHead>Failed Syncs</TableHead>
+                          <TableHead>Actions</TableHead>
                         </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                ) : config.role === 'PARTNER' ? (
-                  <div className="text-center py-8">
-                    <Activity className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-                    <p className="text-muted-foreground mb-2">This node is a Partner</p>
-                    <p className="text-sm text-muted-foreground mb-4">Configuration is received from: {config.principleUrl}</p>
-                    <Button onClick={() => setPromoteDialogOpen(true)}>
-                      <ArrowUp className="h-4 w-4 mr-2" />
-                      Request Promotion to Principle
-                    </Button>
-                  </div>
-                ) : (
-                  <div className="text-center py-8">
-                    <Users className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-                    <p className="text-muted-foreground mb-4">No partners connected</p>
-                    <Button variant="outline" onClick={() => setRequestDialogOpen(true)}>
-                      <Plus className="h-4 w-4 mr-2" />
-                      Send Partnership Request
-                    </Button>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          </TabsContent>
+                      </TableHeader>
+                      <TableBody>
+                        {partners.map((partner) => (
+                          <TableRow key={partner.id}>
+                            <TableCell>
+                              <div>
+                                <p className="font-medium">{partner.nodeName}</p>
+                                <p className="text-xs text-muted-foreground font-mono">
+                                  {partner.nodeUrl}
+                                </p>
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              <Badge
+                                variant={
+                                  partner.status === 'COMPLETED'
+                                    ? 'default'
+                                    : partner.status === 'FAILED'
+                                    ? 'destructive'
+                                    : 'secondary'
+                                }
+                              >
+                                {partner.status}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="text-xs">
+                              {partner.lastSyncAt
+                                ? new Date(partner.lastSyncAt).toLocaleString()
+                                : 'Never'}
+                            </TableCell>
+                            <TableCell>
+                              {partner.failedSyncCount > 0 ? (
+                                <Badge variant="destructive">
+                                  {partner.failedSyncCount}
+                                </Badge>
+                              ) : (
+                                <span className="text-muted-foreground">0</span>
+                              )}
+                            </TableCell>
+                            <TableCell>
+                              <Button variant="ghost" size="sm">
+                                <Unlink className="h-4 w-4" />
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </CardContent>
+                </Card>
+              )}
+            </TabsContent>
 
-          {/* Requests Tab */}
-          <TabsContent value="requests">
-            <div className="grid gap-4 md:grid-cols-2">
-              {/* Incoming Requests */}
+            {/* Requests Tab */}
+            <TabsContent value="requests" className="space-y-4">
               <Card>
                 <CardHeader>
-                  <CardTitle className="text-lg">Incoming Requests</CardTitle>
-                  <CardDescription>Partnership requests from other nodes wanting to be your Partner</CardDescription>
+                  <CardTitle>Partnership Requests</CardTitle>
+                  <CardDescription>
+                    Incoming and outgoing partnership requests
+                  </CardDescription>
                 </CardHeader>
                 <CardContent>
-                  {incomingRequests.length > 0 ? (
-                    <div className="space-y-3">
-                      {incomingRequests.map((req) => (
-                        <div key={req.id} className="border rounded-lg p-4">
-                          <div className="flex items-start justify-between mb-2">
-                            <div>
-                              <p className="font-medium">{req.requesterNodeName}</p>
-                              <p className="text-sm text-muted-foreground">{req.requesterNodeUrl}</p>
-                            </div>
-                            {getStatusBadge(req.status)}
-                          </div>
-                          {req.message && (
-                            <p className="text-sm text-muted-foreground mb-2">"{req.message}"</p>
-                          )}
-                          <p className="text-xs text-muted-foreground mb-3">
-                            Received: {new Date(req.createdAt).toLocaleString()}
-                          </p>
-                          {req.status === 'PENDING' && (
-                            <div className="flex gap-2">
-                              <Button
-                                size="sm"
-                                onClick={() => handleRequestAction(req.id, 'acknowledge')}
-                                disabled={actionLoading}
-                              >
-                                <Check className="h-4 w-4 mr-1" />
-                                Acknowledge
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => handleRequestAction(req.id, 'reject', 'Request denied')}
-                                disabled={actionLoading}
-                              >
-                                <X className="h-4 w-4 mr-1" />
-                                Reject
-                              </Button>
-                            </div>
-                          )}
-                        </div>
-                      ))}
+                  {requests.length === 0 ? (
+                    <div className="text-center py-8 text-muted-foreground">
+                      No pending requests
                     </div>
                   ) : (
-                    <p className="text-center text-muted-foreground py-8">No incoming requests</p>
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Type</TableHead>
+                          <TableHead>From/To</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead>Expires</TableHead>
+                          <TableHead>Actions</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {requests.map((req) => (
+                          <TableRow key={req.id}>
+                            <TableCell>
+                              <Badge
+                                variant={req.type === 'INCOMING' ? 'default' : 'outline'}
+                              >
+                                {req.type}
+                              </Badge>
+                            </TableCell>
+                            <TableCell>
+                              <div>
+                                <p className="font-medium">{req.requesterNodeName}</p>
+                                <p className="text-xs text-muted-foreground font-mono">
+                                  {req.requesterNodeUrl}
+                                </p>
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              <Badge variant="secondary">{req.status}</Badge>
+                            </TableCell>
+                            <TableCell className="text-xs">
+                              {new Date(req.expiresAt).toLocaleString()}
+                            </TableCell>
+                            <TableCell>
+                              {req.status === 'PENDING' && req.type === 'INCOMING' && (
+                                <div className="flex gap-2">
+                                  <Button
+                                    size="sm"
+                                    onClick={() => handleRequestAction(req.id, 'accept')}
+                                  >
+                                    Accept
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="destructive"
+                                    onClick={() => handleRequestAction(req.id, 'reject')}
+                                  >
+                                    Reject
+                                  </Button>
+                                </div>
+                              )}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
                   )}
                 </CardContent>
               </Card>
+            </TabsContent>
 
-              {/* Outgoing Requests */}
+            {/* Performance Tab */}
+            <TabsContent value="performance" className="space-y-4">
+              <div className="grid gap-4 md:grid-cols-2">
+                {/* Cache Stats */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <Database className="h-5 w-5" />
+                      Cache Statistics
+                    </CardTitle>
+                    <CardDescription>
+                      In-memory cache performance metrics
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {stats?.cache ? (
+                      <div className="space-y-4">
+                        {Object.entries(stats.cache).map(([name, cacheStats]) => (
+                          <div key={name} className="space-y-2">
+                            <div className="flex justify-between items-center">
+                              <span className="font-medium capitalize">{name}</span>
+                              <Badge variant="outline">
+                                {(cacheStats.hitRate * 100).toFixed(1)}% hit rate
+                              </Badge>
+                            </div>
+                            <div className="grid grid-cols-3 gap-2 text-sm">
+                              <div>
+                                <p className="text-muted-foreground">Hits</p>
+                                <p className="font-mono">{cacheStats.hits}</p>
+                              </div>
+                              <div>
+                                <p className="text-muted-foreground">Misses</p>
+                                <p className="font-mono">{cacheStats.misses}</p>
+                              </div>
+                              <div>
+                                <p className="text-muted-foreground">Size</p>
+                                <p className="font-mono">{cacheStats.size}</p>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-muted-foreground">No cache data available</p>
+                    )}
+                  </CardContent>
+                </Card>
+
+                {/* Metrics Queue */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <BarChart3 className="h-5 w-5" />
+                      Metrics Queue
+                    </CardTitle>
+                    <CardDescription>
+                      Async metrics batching status
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {stats?.metricsQueue ? (
+                      <div className="space-y-4">
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <p className="text-muted-foreground text-sm">Endpoint Queue</p>
+                            <p className="text-2xl font-bold">
+                              {stats.metricsQueue.endpointQueueSize}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-muted-foreground text-sm">Traffic Queue</p>
+                            <p className="text-2xl font-bold">
+                              {stats.metricsQueue.trafficQueueSize}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-muted-foreground text-sm">Total Flushed</p>
+                            <p className="text-2xl font-bold">
+                              {stats.metricsQueue.totalFlushed}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-muted-foreground text-sm">Flush Errors</p>
+                            <p className="text-2xl font-bold">
+                              {stats.metricsQueue.flushErrors}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          Last flush:{' '}
+                          {stats.metricsQueue.lastFlushAt
+                            ? new Date(stats.metricsQueue.lastFlushAt).toLocaleString()
+                            : 'Never'}
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="text-muted-foreground">No queue data available</p>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+
+              {/* Memory Usage */}
+              {stats?.system && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle>System Resources</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-4">
+                      <div>
+                        <div className="flex justify-between mb-2">
+                          <span>Heap Memory</span>
+                          <span>
+                            {stats.system.heapUsedMB}MB / {stats.system.heapTotalMB}MB
+                          </span>
+                        </div>
+                        <Progress
+                          value={
+                            (stats.system.heapUsedMB / stats.system.heapTotalMB) * 100
+                          }
+                        />
+                      </div>
+                      <div className="grid grid-cols-3 gap-4 text-sm">
+                        <div>
+                          <p className="text-muted-foreground">RSS Memory</p>
+                          <p className="font-mono">{stats.system.rssMB}MB</p>
+                        </div>
+                        <div>
+                          <p className="text-muted-foreground">External</p>
+                          <p className="font-mono">{stats.system.externalMB}MB</p>
+                        </div>
+                        <div>
+                          <p className="text-muted-foreground">Uptime</p>
+                          <p className="font-mono">{formatUptime(stats.system.uptime)}</p>
+                        </div>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+            </TabsContent>
+
+            {/* Configuration Tab */}
+            <TabsContent value="config" className="space-y-4">
               <Card>
                 <CardHeader>
-                  <CardTitle className="text-lg">Outgoing Requests</CardTitle>
-                  <CardDescription>Partnership requests you've sent to other nodes</CardDescription>
+                  <CardTitle>Node Configuration</CardTitle>
+                  <CardDescription>
+                    This node&apos;s federation identity and settings
+                  </CardDescription>
                 </CardHeader>
-                <CardContent>
-                  {outgoingRequests.length > 0 ? (
-                    <div className="space-y-3">
-                      {outgoingRequests.map((req) => (
-                        <div key={req.id} className="border rounded-lg p-4">
-                          <div className="flex items-start justify-between mb-2">
-                            <div>
-                              <p className="font-medium">To: {req.targetNodeUrl}</p>
-                            </div>
-                            {getStatusBadge(req.status)}
-                          </div>
-                          {req.message && (
-                            <p className="text-sm text-muted-foreground mb-2">"{req.message}"</p>
-                          )}
-                          <p className="text-xs text-muted-foreground">
-                            Sent: {new Date(req.createdAt).toLocaleString()}
-                          </p>
-                          {req.rejectionReason && (
-                            <p className="text-sm text-red-500 mt-2">Reason: {req.rejectionReason}</p>
-                          )}
-                        </div>
-                      ))}
+                <CardContent className="space-y-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <Label className="text-muted-foreground">Node ID</Label>
+                      <div className="flex items-center gap-2">
+                        <code className="bg-muted px-2 py-1 rounded text-sm">
+                          {config?.nodeId}
+                        </code>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => copyToClipboard(config?.nodeId || '')}
+                        >
+                          <Copy className="h-4 w-4" />
+                        </Button>
+                      </div>
                     </div>
-                  ) : (
-                    <div className="text-center py-8">
-                      <p className="text-muted-foreground mb-4">No outgoing requests</p>
-                      <Button variant="outline" onClick={() => setRequestDialogOpen(true)}>
-                        <Send className="h-4 w-4 mr-2" />
-                        Send Request
+                    <div>
+                      <Label className="text-muted-foreground">Node Name</Label>
+                      <p className="font-medium">{config?.nodeName}</p>
+                    </div>
+                    <div>
+                      <Label className="text-muted-foreground">Node URL</Label>
+                      <code className="bg-muted px-2 py-1 rounded text-sm block">
+                        {config?.nodeUrl}
+                      </code>
+                    </div>
+                    <div>
+                      <Label className="text-muted-foreground">Role</Label>
+                      <div>{getRoleBadge(config?.role || 'STANDALONE')}</div>
+                    </div>
+                  </div>
+
+                  <div className="border-t pt-4">
+                    <Label className="text-muted-foreground">Secret Key</Label>
+                    <p className="text-xs text-muted-foreground mb-2">
+                      Share this with partners to establish federation connections
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <code className="bg-muted px-2 py-1 rounded text-sm flex-1 font-mono">
+                        {showSecretKey ? secretKey : '••••••••••••••••••••••••'}
+                      </code>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => setShowSecretKey(!showSecretKey)}
+                      >
+                        {showSecretKey ? (
+                          <EyeOff className="h-4 w-4" />
+                        ) : (
+                          <Eye className="h-4 w-4" />
+                        )}
                       </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => copyToClipboard(secretKey)}
+                      >
+                        <Copy className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+
+                  {config?.role === 'PARTNER' && config.principleUrl && (
+                    <div className="border-t pt-4">
+                      <Label className="text-muted-foreground">Principle Node</Label>
+                      <code className="bg-muted px-2 py-1 rounded text-sm block mt-1">
+                        {config.principleUrl}
+                      </code>
                     </div>
                   )}
                 </CardContent>
               </Card>
-            </div>
-          </TabsContent>
-
-          {/* Sync History Tab */}
-          <TabsContent value="sync">
-            <Card>
-              <CardHeader>
-                <CardTitle>Sync History</CardTitle>
-                <CardDescription>Recent synchronization operations</CardDescription>
-              </CardHeader>
-              <CardContent>
-                {syncLogs.length > 0 ? (
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Direction</TableHead>
-                        <TableHead>Type</TableHead>
-                        <TableHead>Partner</TableHead>
-                        <TableHead>Status</TableHead>
-                        <TableHead>Entities</TableHead>
-                        <TableHead>Duration</TableHead>
-                        <TableHead>Time</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {syncLogs.map((log) => (
-                        <TableRow key={log.id}>
-                          <TableCell>
-                            <Badge variant="outline">
-                              {log.direction === 'OUTGOING' ? '↑ Out' : '↓ In'}
-                            </Badge>
-                          </TableCell>
-                          <TableCell>{log.syncType}</TableCell>
-                          <TableCell>{log.partner?.nodeName || '-'}</TableCell>
-                          <TableCell>{getStatusBadge(log.status)}</TableCell>
-                          <TableCell>
-                            {log.entitiesSynced && Object.keys(log.entitiesSynced).length > 0 ? (
-                              <span className="text-xs">
-                                {Object.entries(log.entitiesSynced)
-                                  .map(([k, v]) => `${k}: ${v}`)
-                                  .join(', ')}
-                              </span>
-                            ) : (
-                              '-'
-                            )}
-                          </TableCell>
-                          <TableCell>{log.durationMs ? `${log.durationMs}ms` : '-'}</TableCell>
-                          <TableCell className="text-sm">
-                            {new Date(log.startedAt).toLocaleString()}
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                ) : (
-                  <p className="text-center text-muted-foreground py-8">No sync history</p>
-                )}
-              </CardContent>
-            </Card>
-          </TabsContent>
-        </Tabs>
+            </TabsContent>
+          </Tabs>
+        </>
       )}
 
-      {/* Configure Node Dialog */}
-      <Dialog open={configDialogOpen} onOpenChange={setConfigDialogOpen}>
+      {/* Setup Dialog */}
+      <Dialog open={setupDialogOpen} onOpenChange={setSetupDialogOpen}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Configure Federation</DialogTitle>
-            <DialogDescription>Set up this node for federation with other Traffic Control Planes</DialogDescription>
+            <DialogDescription>
+              Set up this node to participate in a federated cluster
+            </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
+          <div className="space-y-4">
+            <div>
               <Label>Node Name</Label>
               <Input
-                placeholder="e.g., US-East-1 Control Plane"
-                value={configForm.nodeName}
-                onChange={(e) => setConfigForm({ ...configForm, nodeName: e.target.value })}
+                placeholder="e.g., tcp-us-east-1"
+                value={setupForm.nodeName}
+                onChange={(e) =>
+                  setSetupForm({ ...setupForm, nodeName: e.target.value })
+                }
               />
             </div>
-            <div className="space-y-2">
+            <div>
               <Label>Node URL</Label>
               <Input
-                placeholder="e.g., https://tcp-east.example.com"
-                value={configForm.nodeUrl}
-                onChange={(e) => setConfigForm({ ...configForm, nodeUrl: e.target.value })}
+                placeholder="https://tcp.example.com"
+                value={setupForm.nodeUrl}
+                onChange={(e) =>
+                  setSetupForm({ ...setupForm, nodeUrl: e.target.value })
+                }
               />
-              <p className="text-xs text-muted-foreground">
-                The public URL where this TCP can be reached by other nodes
+              <p className="text-xs text-muted-foreground mt-1">
+                Public URL where this node can be reached by peers
+              </p>
+            </div>
+            <div>
+              <Label>Role</Label>
+              <Select
+                value={setupForm.role}
+                onValueChange={(value: 'PRINCIPLE' | 'PARTNER' | 'STANDALONE') =>
+                  setSetupForm({ ...setupForm, role: value })
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="STANDALONE">Standalone</SelectItem>
+                  <SelectItem value="PRINCIPLE">Principle (Primary)</SelectItem>
+                  <SelectItem value="PARTNER">Partner (Secondary)</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground mt-1">
+                Principle nodes propagate configuration to Partner nodes
               </p>
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setConfigDialogOpen(false)}>Cancel</Button>
-            <Button onClick={handleSaveConfig} disabled={actionLoading}>
-              {actionLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-              Save Configuration
+            <Button variant="outline" onClick={() => setSetupDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleSetupFederation}>
+              Configure
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Send Request Dialog */}
-      <Dialog open={requestDialogOpen} onOpenChange={setRequestDialogOpen}>
+      {/* Add Peer Dialog */}
+      <Dialog open={addPeerDialogOpen} onOpenChange={setAddPeerDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Request Partnership</DialogTitle>
+            <DialogTitle>Add Partner Node</DialogTitle>
             <DialogDescription>
-              Send a partnership request to another TCP. You will become a Partner that receives
-              configuration from the Principle.
+              Send a partnership request to another TCP node
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
+          <div className="space-y-4">
+            <div>
               <Label>Target Node URL</Label>
               <Input
-                placeholder="e.g., https://tcp-main.example.com"
-                value={requestForm.targetNodeUrl}
-                onChange={(e) => setRequestForm({ ...requestForm, targetNodeUrl: e.target.value })}
+                placeholder="https://tcp-partner.example.com"
+                value={peerForm.targetNodeUrl}
+                onChange={(e) =>
+                  setPeerForm({ ...peerForm, targetNodeUrl: e.target.value })
+                }
               />
             </div>
-            <div className="space-y-2">
-              <Label>Message (optional)</Label>
-              <Textarea
-                placeholder="Include a message with your request..."
-                value={requestForm.message}
-                onChange={(e) => setRequestForm({ ...requestForm, message: e.target.value })}
+            <div>
+              <Label>Message (Optional)</Label>
+              <Input
+                placeholder="Partnership request message"
+                value={peerForm.message}
+                onChange={(e) =>
+                  setPeerForm({ ...peerForm, message: e.target.value })
+                }
               />
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setRequestDialogOpen(false)}>Cancel</Button>
-            <Button onClick={handleSendRequest} disabled={actionLoading}>
-              {actionLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+            <Button variant="outline" onClick={() => setAddPeerDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleAddPeer}>
               Send Request
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
-      {/* Promote Dialog */}
-      <Dialog open={promoteDialogOpen} onOpenChange={setPromoteDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>
-              {config?.role === 'PARTNER' ? 'Request Promotion' : 'Promote Partner'}
-            </DialogTitle>
-            <DialogDescription>
-              {config?.role === 'PARTNER'
-                ? 'Request to become the new Principle. If the current Principle does not respond within 30 seconds, you will be automatically promoted.'
-                : 'Promote the selected partner to become the new Principle. This node will become a Partner.'}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            {config?.role === 'PARTNER' ? (
-              <div className="space-y-2">
-                <Label>Reason (optional)</Label>
-                <Textarea
-                  placeholder="Why are you requesting promotion?"
-                  value={promotionReason}
-                  onChange={(e) => setPromotionReason(e.target.value)}
-                />
-              </div>
-            ) : (
-              <div className="p-4 bg-yellow-50 dark:bg-yellow-900/20 rounded-lg">
-                <div className="flex gap-2">
-                  <AlertCircle className="h-5 w-5 text-yellow-600 flex-shrink-0" />
-                  <div className="text-sm">
-                    <p className="font-medium text-yellow-800 dark:text-yellow-200">Warning</p>
-                    <p className="text-yellow-700 dark:text-yellow-300">
-                      After promotion, this node will become a Partner and receive configuration from the new Principle.
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => { setPromoteDialogOpen(false); setSelectedPartner(null); setPromotionReason(''); }}>
-              Cancel
-            </Button>
-            <Button
-              onClick={config?.role === 'PARTNER' ? handleRequestPromotion : handlePromotePartner}
-              disabled={actionLoading}
-            >
-              {actionLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-              {config?.role === 'PARTNER' ? 'Request Promotion' : 'Promote'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Delete Partner Confirmation */}
-      <AlertDialog open={!!deletePartnerDialog} onOpenChange={() => setDeletePartnerDialog(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Remove Partner</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to remove this partner? They will no longer receive configuration updates.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-red-600 hover:bg-red-700"
-              onClick={() => deletePartnerDialog && handleRemovePartner(deletePartnerDialog)}
-            >
-              Remove
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   );
 }

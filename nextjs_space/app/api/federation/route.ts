@@ -1,136 +1,194 @@
+/**
+ * Federation Configuration & Status API
+ * 
+ * GET  - Get federation configuration and status
+ * POST - Initialize/update federation configuration
+ */
+
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth-options';
 import { prisma } from '@/lib/db';
-import { createAuditLog, getClientIP } from '@/lib/audit';
+import { createAuditLog } from '@/lib/audit';
+import { getFederationStats, getAllPeers, refreshPeerList } from '@/lib/federation';
 import crypto from 'crypto';
 
-// GET - Get this node's federation configuration
 export async function GET(request: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
-    if (!session?.user?.id) {
+    if (!session?.user?.email) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const orgId = session.user.currentOrgId;
-    if (!orgId) {
-      return NextResponse.json({ error: 'No organization selected' }, { status: 400 });
+    const user = await prisma.user.findUnique({
+      where: { email: session.user.email },
+      include: { memberships: true },
+    });
+
+    if (!user || user.memberships.length === 0) {
+      return NextResponse.json({ error: 'No organization found' }, { status: 404 });
     }
 
-    // Get federation config for this org
-    let config = await prisma.federationConfig.findUnique({
+    const orgId = user.memberships[0].orgId;
+
+    // Get federation config
+    const config = await prisma.federationConfig.findUnique({
       where: { orgId },
     });
 
-    // Get partners (if Principle)
-    const partners = await prisma.federationPartner.findMany({
-      where: { orgId, isActive: true },
-      orderBy: { createdAt: 'desc' },
-    });
+    if (!config) {
+      return NextResponse.json({
+        configured: false,
+        role: 'STANDALONE',
+        message: 'Federation not configured',
+      });
+    }
+
+    // Get stats and peers
+    const stats = await getFederationStats(orgId);
+    const peers = getAllPeers();
+
+    // Get partners if Principle
+    let partners: Array<{
+      nodeId: string;
+      nodeName: string;
+      nodeUrl: string;
+      isActive: boolean;
+      lastSyncAt: Date | null;
+      lastHeartbeat: Date | null;
+      syncStatus: string;
+    }> = [];
+    if (config.role === 'PRINCIPLE') {
+      partners = await prisma.federationPartner.findMany({
+        where: { orgId },
+        select: {
+          nodeId: true,
+          nodeName: true,
+          nodeUrl: true,
+          isActive: true,
+          lastSyncAt: true,
+          lastHeartbeat: true,
+          syncStatus: true,
+        },
+      });
+    }
 
     // Get pending requests
     const pendingRequests = await prisma.federationRequest.findMany({
-      where: {
-        orgId,
-        status: 'PENDING',
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-
-    // Get recent sync logs
-    const recentSyncs = await prisma.federationSyncLog.findMany({
-      where: { orgId },
-      orderBy: { startedAt: 'desc' },
-      take: 10,
-      include: { partner: { select: { nodeName: true, nodeUrl: true } } },
+      where: { orgId, status: 'PENDING' },
     });
 
     return NextResponse.json({
-      config,
+      configured: true,
+      config: {
+        nodeId: config.nodeId,
+        nodeName: config.nodeName,
+        nodeUrl: config.nodeUrl,
+        role: config.role,
+        principleNodeId: config.principleNodeId,
+        principleUrl: config.principleUrl,
+        isActive: config.isActive,
+        lastHeartbeat: config.lastHeartbeat,
+      },
+      stats,
+      peers,
       partners,
-      pendingRequests,
-      recentSyncs,
+      pendingRequests: pendingRequests.length,
     });
   } catch (error) {
     console.error('Error fetching federation config:', error);
-    return NextResponse.json({ error: 'Failed to fetch federation config' }, { status: 500 });
+    return NextResponse.json(
+      { error: 'Failed to fetch federation configuration' },
+      { status: 500 }
+    );
   }
 }
 
-// POST - Initialize or update federation configuration
 export async function POST(request: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
-    if (!session?.user?.id) {
+    if (!session?.user?.email) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const orgId = session.user.currentOrgId;
-    if (!orgId) {
-      return NextResponse.json({ error: 'No organization selected' }, { status: 400 });
+    const user = await prisma.user.findUnique({
+      where: { email: session.user.email },
+      include: { memberships: true },
+    });
+
+    if (!user || user.memberships.length === 0) {
+      return NextResponse.json({ error: 'No organization found' }, { status: 404 });
     }
 
+    const membership = user.memberships[0];
+    if (!['OWNER', 'ADMIN'].includes(membership.role)) {
+      return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 });
+    }
+
+    const orgId = membership.orgId;
     const body = await request.json();
-    const { nodeName, nodeUrl } = body;
+    const { nodeName, nodeUrl, role } = body;
 
     if (!nodeName || !nodeUrl) {
-      return NextResponse.json({ error: 'Node name and URL are required' }, { status: 400 });
+      return NextResponse.json(
+        { error: 'nodeName and nodeUrl are required' },
+        { status: 400 }
+      );
     }
 
-    // Check if config exists
-    let config = await prisma.federationConfig.findUnique({
+    // Check for existing config
+    const existingConfig = await prisma.federationConfig.findUnique({
       where: { orgId },
     });
 
-    const secretKey = crypto.randomBytes(32).toString('hex');
+    const secretKey = existingConfig?.secretKey || crypto.randomBytes(32).toString('hex');
+    const nodeId = existingConfig?.nodeId || `tcp-${crypto.randomBytes(8).toString('hex')}`;
 
-    if (config) {
-      // Update existing config
-      config = await prisma.federationConfig.update({
-        where: { orgId },
-        data: {
-          nodeName,
-          nodeUrl,
-          updatedAt: new Date(),
-        },
-      });
-
-      await createAuditLog({
+    const config = await prisma.federationConfig.upsert({
+      where: { orgId },
+      update: {
+        nodeName,
+        nodeUrl,
+        role: role || 'STANDALONE',
+        updatedAt: new Date(),
+      },
+      create: {
         orgId,
-        userId: session.user.id,
-        action: 'federation.config.updated',
-        resourceType: 'federation_config',
-        resourceId: config.id,
-        details: { nodeName, nodeUrl },
-        ipAddress: getClientIP(request),
-      });
-    } else {
-      // Create new config
-      config = await prisma.federationConfig.create({
-        data: {
-          orgId,
-          nodeName,
-          nodeUrl,
-          secretKey,
-          role: 'STANDALONE',
-        },
-      });
+        nodeId,
+        nodeName,
+        nodeUrl,
+        role: role || 'STANDALONE',
+        secretKey,
+      },
+    });
 
-      await createAuditLog({
-        orgId,
-        userId: session.user.id,
-        action: 'federation.config.created',
-        resourceType: 'federation_config',
-        resourceId: config.id,
-        details: { nodeName, nodeUrl },
-        ipAddress: getClientIP(request),
-      });
-    }
+    await createAuditLog({
+      orgId,
+      userId: user.id,
+      action: 'federation.configured',
+      resourceType: 'federation',
+      resourceId: config.id,
+      details: { nodeName, nodeUrl, role: role || 'STANDALONE' },
+    });
 
-    return NextResponse.json({ config });
+    // Initialize federation state
+    await refreshPeerList(orgId);
+
+    return NextResponse.json({
+      success: true,
+      config: {
+        nodeId: config.nodeId,
+        nodeName: config.nodeName,
+        nodeUrl: config.nodeUrl,
+        role: config.role,
+        secretKey: config.secretKey,
+      },
+    });
   } catch (error) {
-    console.error('Error updating federation config:', error);
-    return NextResponse.json({ error: 'Failed to update federation config' }, { status: 500 });
+    console.error('Error configuring federation:', error);
+    return NextResponse.json(
+      { error: 'Failed to configure federation' },
+      { status: 500 }
+    );
   }
 }

@@ -71,10 +71,13 @@ export type AuditAction =
   // Federation Actions
   | 'federation.config.created'
   | 'federation.config.updated'
+  | 'federation.configured'
   | 'federation.request.sent'
   | 'federation.request.received'
   | 'federation.request.acknowledged'
+  | 'federation.request.accepted'
   | 'federation.request.rejected'
+  | 'federation.request.cancelled'
   | 'federation.partner.added'
   | 'federation.partner.removed'
   | 'federation.sync.initiated'

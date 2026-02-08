@@ -1349,6 +1349,143 @@ async function main() {
   console.log('  - carol@techstart.com (Owner at TechStart Inc)');
   console.log('  - dave@techstart.com (Viewer at TechStart Inc)');
   console.log('  - eve@external.com (Auditor at Acme Corp)');
+
+  // =======================================
+  // Federation Demo Data
+  // =======================================
+  console.log('\nCreating federation demo data...');
+
+  // Create federation config for Acme Corp (as Principle node)
+  const federationConfig = await prisma.federationConfig.upsert({
+    where: { orgId: acmeCorp.id },
+    update: {},
+    create: {
+      orgId: acmeCorp.id,
+      nodeId: 'tcp-us-east-001',
+      nodeName: 'TCP US-East Primary',
+      nodeUrl: 'https://tcp-us-east.acme.com',
+      role: 'PRINCIPLE',
+      secretKey: 'demo-secret-key-acme-federation-2024',
+      isActive: true,
+      lastHeartbeat: new Date(),
+      metadata: {
+        region: 'us-east-1',
+        datacenter: 'dc-1',
+        capacity: 100000,
+      },
+    },
+  });
+  console.log('Created federation config:', federationConfig.nodeName);
+
+  // Create demo federation partners
+  const partner1 = await prisma.federationPartner.upsert({
+    where: { orgId_nodeId: { orgId: acmeCorp.id, nodeId: 'tcp-us-west-001' } },
+    update: {},
+    create: {
+      orgId: acmeCorp.id,
+      nodeId: 'tcp-us-west-001',
+      nodeName: 'TCP US-West Secondary',
+      nodeUrl: 'https://tcp-us-west.acme.com',
+      secretKey: 'demo-partner-key-us-west-2024',
+      isActive: true,
+      syncStatus: 'COMPLETED',
+      lastSyncAt: new Date(Date.now() - 5 * 60 * 1000), // 5 minutes ago
+      lastHeartbeat: new Date(Date.now() - 10 * 1000), // 10 seconds ago
+      failedSyncCount: 0,
+      metadata: {
+        region: 'us-west-2',
+        datacenter: 'dc-2',
+        capacity: 80000,
+      },
+    },
+  });
+
+  const partner2 = await prisma.federationPartner.upsert({
+    where: { orgId_nodeId: { orgId: acmeCorp.id, nodeId: 'tcp-eu-west-001' } },
+    update: {},
+    create: {
+      orgId: acmeCorp.id,
+      nodeId: 'tcp-eu-west-001',
+      nodeName: 'TCP EU-West Node',
+      nodeUrl: 'https://tcp-eu-west.acme.com',
+      secretKey: 'demo-partner-key-eu-west-2024',
+      isActive: true,
+      syncStatus: 'COMPLETED',
+      lastSyncAt: new Date(Date.now() - 3 * 60 * 1000), // 3 minutes ago
+      lastHeartbeat: new Date(Date.now() - 8 * 1000), // 8 seconds ago
+      failedSyncCount: 0,
+      metadata: {
+        region: 'eu-west-1',
+        datacenter: 'dc-3',
+        capacity: 60000,
+      },
+    },
+  });
+
+  const partner3 = await prisma.federationPartner.upsert({
+    where: { orgId_nodeId: { orgId: acmeCorp.id, nodeId: 'tcp-ap-south-001' } },
+    update: {},
+    create: {
+      orgId: acmeCorp.id,
+      nodeId: 'tcp-ap-south-001',
+      nodeName: 'TCP AP-South Node',
+      nodeUrl: 'https://tcp-ap-south.acme.com',
+      secretKey: 'demo-partner-key-ap-south-2024',
+      isActive: true,
+      syncStatus: 'IN_PROGRESS',
+      lastSyncAt: new Date(Date.now() - 15 * 60 * 1000), // 15 minutes ago
+      lastHeartbeat: new Date(Date.now() - 30 * 1000), // 30 seconds ago
+      failedSyncCount: 1,
+      metadata: {
+        region: 'ap-south-1',
+        datacenter: 'dc-4',
+        capacity: 40000,
+      },
+    },
+  });
+  console.log('Created federation partners:', partner1.nodeName, partner2.nodeName, partner3.nodeName);
+
+  // Create demo sync logs
+  await prisma.federationSyncLog.createMany({
+    data: [
+      {
+        orgId: acmeCorp.id,
+        partnerId: partner1.id,
+        direction: 'OUTGOING',
+        syncType: 'FULL',
+        status: 'COMPLETED',
+        entitiesSynced: { backends: 8, policies: 5, experiments: 3 },
+        startedAt: new Date(Date.now() - 5 * 60 * 1000),
+        completedAt: new Date(Date.now() - 4 * 60 * 1000),
+        durationMs: 62000,
+      },
+      {
+        orgId: acmeCorp.id,
+        partnerId: partner2.id,
+        direction: 'OUTGOING',
+        syncType: 'INCREMENTAL',
+        status: 'COMPLETED',
+        entitiesSynced: { backends: 2, policies: 1 },
+        startedAt: new Date(Date.now() - 3 * 60 * 1000),
+        completedAt: new Date(Date.now() - 2 * 60 * 1000),
+        durationMs: 45000,
+      },
+      {
+        orgId: acmeCorp.id,
+        partnerId: partner3.id,
+        direction: 'OUTGOING',
+        syncType: 'FULL',
+        status: 'FAILED',
+        entitiesSynced: { backends: 4 },
+        errorMessage: 'Connection timeout after 30 seconds',
+        startedAt: new Date(Date.now() - 15 * 60 * 1000),
+        durationMs: 30000,
+      },
+    ],
+    skipDuplicates: true,
+  });
+  console.log('Created federation sync logs');
+
   console.log('\nTraffic Control Demo Data:');
   console.log('  Backend Clusters: production-api, canary-api, staging-api');
   console.log('  Routing Policies: canary-release-v2, beta-users, geo-routing-eu, and more');
@@ -1366,6 +1503,10 @@ async function main() {
   console.log('  - webhook-ingest (Webhook Ingestion) - Proxy');
   console.log('  - health-check-mock (Health Check Mock) - Mock');
   console.log('  - legacy-api-deprecated (Legacy API) - Disabled');
+  console.log('\nFederation Demo Data:');
+  console.log('  Role: PRINCIPLE (Primary Node)');
+  console.log('  Node: TCP US-East Primary');
+  console.log('  Partners: TCP US-West Secondary, TCP EU-West Node, TCP AP-South Node');
 }
 
 main()
