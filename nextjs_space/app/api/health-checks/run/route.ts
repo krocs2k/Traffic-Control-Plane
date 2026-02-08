@@ -223,14 +223,29 @@ export async function POST(request: NextRequest) {
         // Get LoadBalancerConfig for this backend's cluster (for cluster-level health check settings)
         const lbConfig = lbConfigMap.get(backend.clusterId);
         
-        // Priority: Backend's healthCheckPath (if populated) > LoadBalancerConfig's healthCheckPath > default '/health'
+        // Get cluster's healthCheck JSON settings
+        const clusterHealthCheck = (backend.cluster.healthCheck as { path?: string; timeoutMs?: number; intervalMs?: number }) || {};
+        
+        // Priority: Backend's healthCheckPath (if populated) > LoadBalancerConfig's healthCheckPath > Cluster's healthCheck.path > default '/health'
         // Backend's path is only used as an override if it's not empty
-        const healthCheckPath = backend.healthCheckPath && backend.healthCheckPath.trim() !== ''
-          ? backend.healthCheckPath 
-          : (lbConfig?.healthCheckPath || '/health');
+        let healthCheckPath: string;
+        let healthCheckSource: string;
+        
+        if (backend.healthCheckPath && backend.healthCheckPath.trim() !== '') {
+          healthCheckPath = backend.healthCheckPath;
+          healthCheckSource = 'backend';
+        } else if (lbConfig?.healthCheckPath) {
+          healthCheckPath = lbConfig.healthCheckPath;
+          healthCheckSource = 'loadBalancerConfig';
+        } else if (clusterHealthCheck.path) {
+          healthCheckPath = clusterHealthCheck.path;
+          healthCheckSource = 'cluster';
+        } else {
+          healthCheckPath = '/health';
+          healthCheckSource = 'default';
+        }
         
         // Use LoadBalancerConfig settings if available, otherwise fall back to cluster's healthCheck JSON
-        const clusterHealthCheck = (backend.cluster.healthCheck as { timeoutMs?: number; intervalMs?: number }) || {};
         const timeoutMs = lbConfig?.healthCheckTimeoutMs || clusterHealthCheck.timeoutMs || 5000;
         const degradedThreshold = lbConfig?.healthCheckIntervalMs || clusterHealthCheck.intervalMs || 500;
         
@@ -264,9 +279,7 @@ export async function POST(request: NextRequest) {
               checkedAt: new Date().toISOString(),
               timeoutMs,
               healthCheckPath,
-              source: backend.healthCheckPath && backend.healthCheckPath.trim() !== '' 
-                ? 'backend' 
-                : (lbConfig?.healthCheckPath ? 'loadBalancerConfig' : 'default'),
+              source: healthCheckSource,
             },
           },
         });
