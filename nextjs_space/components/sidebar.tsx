@@ -19,6 +19,7 @@ import {
   FileText,
   ChevronLeft,
   ChevronRight,
+  Network,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -75,6 +76,7 @@ export function Sidebar() {
     { href: '/dashboard/experiments', icon: FlaskConical, label: 'Experiments', permission: 'routing' },
     { href: '/dashboard/load-balancing', icon: Shuffle, label: 'Load Balancing', permission: 'routing' },
     { href: '/dashboard/alerts', icon: BellRing, label: 'Alerts', permission: 'resources' },
+    { href: '/dashboard/federation', icon: Network, label: 'Federation', permission: 'routing' },
     { href: '/audit', icon: FileText, label: 'Audit Log', permission: 'audit' },
   ];
 

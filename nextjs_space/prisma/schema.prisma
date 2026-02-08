@@ -790,3 +790,150 @@ model TrafficEndpoint {
   @@index([isActive])
   @@map("traffic_endpoints")
 }
+
+// ============================================
+// Federation - Multi-TCP Clustering
+// ============================================
+
+enum FederationRole {
+  PRINCIPLE    // The primary node that propagates configuration
+  PARTNER      // Receives configuration from Principle
+  STANDALONE   // Not part of any federation
+}
+
+enum FederationRequestStatus {
+  PENDING      // Awaiting acknowledgment
+  ACKNOWLEDGED // Accepted by Principle
+  REJECTED     // Rejected by Principle
+  EXPIRED      // Timed out
+  CANCELLED    // Cancelled by requester
+}
+
+enum FederationSyncStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+}
+
+// Represents this TCP node's federation configuration
+model FederationConfig {
+  id              String          @id @default(cuid())
+  orgId           String          @unique
+  nodeId          String          @unique @default(cuid()) // Unique identifier for this node
+  nodeName        String          // Human-readable name for this node
+  nodeUrl         String          // Public URL of this TCP instance
+  role            FederationRole  @default(STANDALONE)
+  principleNodeId String?         // If Partner, the ID of the Principle
+  principleUrl    String?         // If Partner, the URL of the Principle
+  secretKey       String          // Shared secret for authentication between nodes
+  lastHeartbeat   DateTime?       // Last successful heartbeat
+  isActive        Boolean         @default(true)
+  metadata        Json            @default("{}")
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@index([nodeId])
+  @@index([role])
+  @@map("federation_configs")
+}
+
+// Partner nodes connected to this TCP (when acting as Principle)
+model FederationPartner {
+  id              String          @id @default(cuid())
+  orgId           String
+  nodeId          String          // Partner's unique node ID
+  nodeName        String
+  nodeUrl         String
+  secretKey       String          // Shared secret for this partner
+  isActive        Boolean         @default(true)
+  lastSyncAt      DateTime?       // Last successful sync to this partner
+  lastHeartbeat   DateTime?       // Last heartbeat received
+  syncStatus      FederationSyncStatus @default(PENDING)
+  failedSyncCount Int             @default(0)
+  metadata        Json            @default("{}")
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  syncLogs        FederationSyncLog[]
+
+  @@unique([orgId, nodeId])
+  @@index([orgId])
+  @@index([nodeId])
+  @@index([isActive])
+  @@map("federation_partners")
+}
+
+// Partnership requests (both incoming and outgoing)
+model FederationRequest {
+  id                String                  @id @default(cuid())
+  orgId             String
+  requestType       String                  // "OUTGOING" or "INCOMING"
+  requesterNodeId   String                  // Node ID of the requester (Partner)
+  requesterNodeName String
+  requesterNodeUrl  String
+  targetNodeId      String?                 // Node ID of the target (Principle)
+  targetNodeUrl     String?                 // URL of the target
+  status            FederationRequestStatus @default(PENDING)
+  secretKey         String                  // Proposed shared secret
+  message           String?                 // Optional message
+  acknowledgedAt    DateTime?
+  rejectedAt        DateTime?
+  rejectionReason   String?
+  expiresAt         DateTime                // Request expiration
+  metadata          Json                    @default("{}")
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+
+  @@index([orgId])
+  @@index([status])
+  @@index([requesterNodeId])
+  @@index([targetNodeId])
+  @@map("federation_requests")
+}
+
+// Promotion requests (Partner requesting to become Principle)
+model FederationPromotionRequest {
+  id                String    @id @default(cuid())
+  orgId             String
+  requesterNodeId   String    // Partner requesting promotion
+  requesterNodeUrl  String
+  currentPrincipleId String?  // Current Principle's node ID
+  status            String    @default("PENDING") // PENDING, APPROVED, REJECTED, AUTO_PROMOTED, CANCELLED
+  requestedAt       DateTime  @default(now())
+  responseDeadline  DateTime  // 30 seconds from request
+  respondedAt       DateTime?
+  promotedAt        DateTime?
+  reason            String?
+  metadata          Json      @default("{}")
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([orgId])
+  @@index([status])
+  @@index([requesterNodeId])
+  @@map("federation_promotion_requests")
+}
+
+// Sync operation logs
+model FederationSyncLog {
+  id              String              @id @default(cuid())
+  orgId           String
+  partner         FederationPartner?  @relation(fields: [partnerId], references: [id], onDelete: SetNull)
+  partnerId       String?
+  direction       String              // "OUTGOING" (to partner) or "INCOMING" (from principle)
+  syncType        String              // "FULL", "INCREMENTAL", "CONFIG_CHANGE"
+  status          FederationSyncStatus @default(PENDING)
+  entitiesSynced  Json                @default("{}") // { backends: 5, policies: 3, etc. }
+  errorMessage    String?
+  startedAt       DateTime            @default(now())
+  completedAt     DateTime?
+  durationMs      Int?
+  metadata        Json                @default("{}")
+
+  @@index([orgId])
+  @@index([partnerId])
+  @@index([status])
+  @@index([startedAt])
+  @@map("federation_sync_logs")
+}

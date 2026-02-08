@@ -67,7 +67,24 @@ export type AuditAction =
   // Endpoint Actions
   | 'endpoint.created'
   | 'endpoint.updated'
-  | 'endpoint.deleted';
+  | 'endpoint.deleted'
+  // Federation Actions
+  | 'federation.config.created'
+  | 'federation.config.updated'
+  | 'federation.request.sent'
+  | 'federation.request.received'
+  | 'federation.request.acknowledged'
+  | 'federation.request.rejected'
+  | 'federation.partner.added'
+  | 'federation.partner.removed'
+  | 'federation.sync.initiated'
+  | 'federation.sync.completed'
+  | 'federation.sync.failed'
+  | 'federation.promotion.requested'
+  | 'federation.promotion.approved'
+  | 'federation.promotion.rejected'
+  | 'federation.promotion.auto'
+  | 'federation.role.changed';
 
 export interface AuditDetails {
   before?: Record<string, unknown>;
