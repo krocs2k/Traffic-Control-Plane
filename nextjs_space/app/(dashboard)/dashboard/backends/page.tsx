@@ -152,7 +152,7 @@ export default function BackendsPage() {
   const [clusterForm, setClusterForm] = useState({ name: '', description: '' });
   const [backendForm, setBackendForm] = useState({
     name: '', host: '', port: '443', protocol: 'https', weight: '100',
-    healthCheckPath: '/health', maxConnections: '', status: 'HEALTHY'
+    healthCheckPath: '', maxConnections: '', status: 'HEALTHY'
   });
   const [loadBalancerConfigs, setLoadBalancerConfigs] = useState<Map<string, LoadBalancerConfig>>(new Map());
 
@@ -260,7 +260,7 @@ export default function BackendsPage() {
       setEditingBackend(null);
       setBackendForm({
         name: '', host: '', port: '443', protocol: 'https', weight: '100',
-        healthCheckPath: '/health', maxConnections: '', status: 'HEALTHY'
+        healthCheckPath: '', maxConnections: '', status: 'HEALTHY'
       });
     }
     setBackendDialogOpen(true);
@@ -761,11 +761,12 @@ export default function BackendsPage() {
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="grid gap-2">
-                <Label htmlFor="backend-health-path">Health Check Path</Label>
+                <Label htmlFor="backend-health-path">Health Check Path (Override)</Label>
                 <Input
                   id="backend-health-path"
                   value={backendForm.healthCheckPath}
                   onChange={(e) => setBackendForm({ ...backendForm, healthCheckPath: e.target.value })}
+                  placeholder="Uses Load Balancing config if empty"
                 />
               </div>
               <div className="grid gap-2">

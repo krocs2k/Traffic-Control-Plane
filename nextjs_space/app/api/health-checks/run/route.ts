@@ -223,11 +223,11 @@ export async function POST(request: NextRequest) {
         // Get LoadBalancerConfig for this backend's cluster (for cluster-level health check settings)
         const lbConfig = lbConfigMap.get(backend.clusterId);
         
-        // Priority: Backend's healthCheckPath > LoadBalancerConfig's healthCheckPath > default '/health'
-        // If backend has a non-default path, use it; otherwise use cluster config
-        const healthCheckPath = backend.healthCheckPath !== '/health' 
+        // Priority: Backend's healthCheckPath (if populated) > LoadBalancerConfig's healthCheckPath > default '/health'
+        // Backend's path is only used as an override if it's not empty
+        const healthCheckPath = backend.healthCheckPath && backend.healthCheckPath.trim() !== ''
           ? backend.healthCheckPath 
-          : (lbConfig?.healthCheckPath || backend.healthCheckPath || '/health');
+          : (lbConfig?.healthCheckPath || '/health');
         
         // Use LoadBalancerConfig settings if available, otherwise fall back to cluster's healthCheck JSON
         const clusterHealthCheck = (backend.cluster.healthCheck as { timeoutMs?: number; intervalMs?: number }) || {};
@@ -264,7 +264,9 @@ export async function POST(request: NextRequest) {
               checkedAt: new Date().toISOString(),
               timeoutMs,
               healthCheckPath,
-              source: backend.healthCheckPath !== '/health' ? 'backend' : (lbConfig ? 'loadBalancerConfig' : 'default'),
+              source: backend.healthCheckPath && backend.healthCheckPath.trim() !== '' 
+                ? 'backend' 
+                : (lbConfig?.healthCheckPath ? 'loadBalancerConfig' : 'default'),
             },
           },
         });
