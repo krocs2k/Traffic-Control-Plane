@@ -226,21 +226,38 @@ export async function POST(request: NextRequest) {
         // Get cluster's healthCheck JSON settings
         const clusterHealthCheck = (backend.cluster.healthCheck as { path?: string; timeoutMs?: number; intervalMs?: number }) || {};
         
-        // Priority: Backend's healthCheckPath (if populated) > LoadBalancerConfig's healthCheckPath > Cluster's healthCheck.path > default '/health'
-        // Backend's path is only used as an override if it's not empty
+        // Priority: Backend's healthCheckPath (if custom) > LoadBalancerConfig's healthCheckPath > Cluster's healthCheck.path > default '/health'
+        // Backend's path is only used as an override if it's not empty AND not the default '/health'
+        // This allows LoadBalancerConfig to take precedence for backends that still have the old default
         let healthCheckPath: string;
         let healthCheckSource: string;
         
-        if (backend.healthCheckPath && backend.healthCheckPath.trim() !== '') {
+        const backendHasCustomPath = backend.healthCheckPath && 
+          backend.healthCheckPath.trim() !== '' && 
+          backend.healthCheckPath.trim() !== '/health';
+        
+        const lbConfigHasPath = lbConfig?.healthCheckPath && 
+          lbConfig.healthCheckPath.trim() !== '' && 
+          lbConfig.healthCheckPath.trim() !== '/health';
+        
+        const clusterHasPath = clusterHealthCheck.path && 
+          clusterHealthCheck.path.trim() !== '' && 
+          clusterHealthCheck.path.trim() !== '/health';
+        
+        if (backendHasCustomPath) {
+          // Backend has a custom path that's not the default - use it as override
           healthCheckPath = backend.healthCheckPath;
           healthCheckSource = 'backend';
-        } else if (lbConfig?.healthCheckPath && lbConfig.healthCheckPath.trim() !== '') {
-          healthCheckPath = lbConfig.healthCheckPath;
+        } else if (lbConfigHasPath) {
+          // LoadBalancerConfig has a custom path - use cluster-level setting
+          healthCheckPath = lbConfig!.healthCheckPath;
           healthCheckSource = 'loadBalancerConfig';
-        } else if (clusterHealthCheck.path && clusterHealthCheck.path.trim() !== '') {
-          healthCheckPath = clusterHealthCheck.path;
+        } else if (clusterHasPath) {
+          // Cluster JSON has a custom path
+          healthCheckPath = clusterHealthCheck.path!;
           healthCheckSource = 'cluster';
         } else {
+          // Fall back to default /health
           healthCheckPath = '/health';
           healthCheckSource = 'default';
         }
