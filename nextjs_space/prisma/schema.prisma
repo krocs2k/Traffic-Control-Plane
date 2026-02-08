@@ -207,7 +207,7 @@ model Backend {
   maxConnections Int?
   currentConnections Int     @default(0)
   lastHealthCheck DateTime?
-  healthCheckPath String     @default("/health")
+  healthCheckPath String     @default("")
   tags         String[]      @default([])
   metadata     Json          @default("{}")
   isActive     Boolean       @default(true)

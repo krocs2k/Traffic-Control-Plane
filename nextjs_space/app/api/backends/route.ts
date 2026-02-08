@@ -108,7 +108,7 @@ export async function POST(request: NextRequest) {
         port: port || 443,
         protocol: protocol || 'https',
         weight: weight || 100,
-        healthCheckPath: healthCheckPath || '/health',
+        healthCheckPath: healthCheckPath || '',
         maxConnections: maxConnections || null,
         tags: tags || [],
         status: BackendStatus.HEALTHY
