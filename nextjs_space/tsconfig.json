@@ -7,6 +7,7 @@
       "es5",
       "es2020"
     ],
+    "types": ["node", "react", "react-dom"],
     "allowJs": true,
     "skipLibCheck": true,
     "strict": true,
