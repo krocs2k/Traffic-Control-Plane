@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import {
   Server,
   Plus,
@@ -17,6 +18,12 @@ import {
   ChevronDown,
   ChevronRight,
   RefreshCw,
+  Settings,
+  Shield,
+  Clock,
+  Shuffle,
+  Zap,
+  Network,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -61,6 +68,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { toast } from 'sonner';
 import { hasPermission } from '@/lib/types';
 
@@ -80,6 +88,17 @@ interface Backend {
   lastHealthCheck: string | null;
 }
 
+interface LoadBalancerConfig {
+  id: string;
+  strategy: string;
+  stickySession: boolean;
+  healthCheckEnabled: boolean;
+  failoverEnabled: boolean;
+  retryEnabled: boolean;
+  maxRetries: number;
+  connectionDrainingMs: number;
+}
+
 interface BackendCluster {
   id: string;
   name: string;
@@ -88,6 +107,7 @@ interface BackendCluster {
   isActive: boolean;
   backends: Backend[];
   _count: { backends: number; routingPolicies: number };
+  loadBalancerConfig?: LoadBalancerConfig | null;
 }
 
 const STATUS_ICONS = {
@@ -129,11 +149,12 @@ export default function BackendsPage() {
   const [deleteTarget, setDeleteTarget] = useState<{ type: 'cluster' | 'backend'; id: string; name: string } | null>(null);
 
   // Form states
-  const [clusterForm, setClusterForm] = useState({ name: '', description: '', strategy: 'ROUND_ROBIN' });
+  const [clusterForm, setClusterForm] = useState({ name: '', description: '' });
   const [backendForm, setBackendForm] = useState({
     name: '', host: '', port: '443', protocol: 'https', weight: '100',
     healthCheckPath: '/health', maxConnections: '', status: 'HEALTHY'
   });
+  const [loadBalancerConfigs, setLoadBalancerConfigs] = useState<Map<string, LoadBalancerConfig>>(new Map());
 
   const orgId = session?.user?.currentOrgId;
   const userRole = session?.user?.currentOrgRole ?? 'VIEWER';
@@ -142,6 +163,7 @@ export default function BackendsPage() {
   useEffect(() => {
     if (orgId) {
       fetchClusters();
+      fetchLoadBalancerConfigs();
     }
   }, [orgId]);
 
@@ -151,14 +173,32 @@ export default function BackendsPage() {
       const res = await fetch(`/api/backends/clusters?orgId=${orgId}`);
       if (res.ok) {
         const data = await res.json();
-        setClusters(data.clusters || []);
-        setExpandedClusters(new Set(data.clusters?.map((c: BackendCluster) => c.id) || []));
+        // API now returns array directly, not { clusters: [] }
+        const clusterList = Array.isArray(data) ? data : (data.clusters || []);
+        setClusters(clusterList);
+        setExpandedClusters(new Set(clusterList.map((c: BackendCluster) => c.id)));
       }
     } catch (error) {
       console.error('Error fetching clusters:', error);
       toast.error('Failed to load backend clusters');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchLoadBalancerConfigs = async () => {
+    try {
+      const res = await fetch('/api/load-balancing');
+      if (res.ok) {
+        const configs = await res.json();
+        const configMap = new Map<string, LoadBalancerConfig>();
+        configs.forEach((config: LoadBalancerConfig & { clusterId: string }) => {
+          configMap.set(config.clusterId, config);
+        });
+        setLoadBalancerConfigs(configMap);
+      }
+    } catch (error) {
+      console.error('Error fetching load balancer configs:', error);
     }
   };
 
@@ -177,12 +217,29 @@ export default function BackendsPage() {
   const openClusterDialog = (cluster?: BackendCluster) => {
     if (cluster) {
       setEditingCluster(cluster);
-      setClusterForm({ name: cluster.name, description: cluster.description || '', strategy: cluster.strategy });
+      setClusterForm({ name: cluster.name, description: cluster.description || '' });
     } else {
       setEditingCluster(null);
-      setClusterForm({ name: '', description: '', strategy: 'ROUND_ROBIN' });
+      setClusterForm({ name: '', description: '' });
     }
     setClusterDialogOpen(true);
+  };
+
+  const getStrategyIcon = (strategy: string) => {
+    switch (strategy) {
+      case 'ROUND_ROBIN':
+        return <Shuffle className="h-3.5 w-3.5" />;
+      case 'LEAST_CONNECTIONS':
+        return <Activity className="h-3.5 w-3.5" />;
+      case 'RANDOM':
+        return <Zap className="h-3.5 w-3.5" />;
+      case 'IP_HASH':
+        return <Network className="h-3.5 w-3.5" />;
+      case 'WEIGHTED_ROUND_ROBIN':
+        return <Server className="h-3.5 w-3.5" />;
+      default:
+        return <Settings className="h-3.5 w-3.5" />;
+    }
   };
 
   const openBackendDialog = (clusterId: string, backend?: Backend) => {
@@ -352,7 +409,9 @@ export default function BackendsPage() {
         </Card>
       ) : (
         <div className="space-y-4">
-          {clusters.map(cluster => (
+          {clusters.map(cluster => {
+            const lbConfig = loadBalancerConfigs.get(cluster.id);
+            return (
             <Collapsible
               key={cluster.id}
               open={expandedClusters.has(cluster.id)}
@@ -368,9 +427,6 @@ export default function BackendsPage() {
                         <ChevronRight className="h-4 w-4" />
                       )}
                       <CardTitle className="text-lg">{cluster.name}</CardTitle>
-                      <Badge variant="outline" className="ml-2">
-                        {STRATEGY_LABELS[cluster.strategy] || cluster.strategy}
-                      </Badge>
                       <Badge variant="secondary" className="ml-2">
                         {cluster._count.backends} backends
                       </Badge>
@@ -409,6 +465,76 @@ export default function BackendsPage() {
                   {cluster.description && (
                     <CardDescription>{cluster.description}</CardDescription>
                   )}
+                  
+                  {/* Load Balancer Configuration Summary */}
+                  <TooltipProvider>
+                    <div className="flex flex-wrap items-center gap-2 mt-2">
+                      {lbConfig ? (
+                        <>
+                          <Tooltip>
+                            <TooltipTrigger>
+                              <Badge variant="outline" className="flex items-center gap-1.5">
+                                {getStrategyIcon(lbConfig.strategy)}
+                                {STRATEGY_LABELS[lbConfig.strategy] || lbConfig.strategy}
+                              </Badge>
+                            </TooltipTrigger>
+                            <TooltipContent>Load Balancing Strategy</TooltipContent>
+                          </Tooltip>
+                          
+                          <Tooltip>
+                            <TooltipTrigger>
+                              <Badge variant={lbConfig.healthCheckEnabled ? "default" : "secondary"} className="flex items-center gap-1">
+                                <Shield className="h-3 w-3" />
+                                Health
+                              </Badge>
+                            </TooltipTrigger>
+                            <TooltipContent>Health Check {lbConfig.healthCheckEnabled ? 'Enabled' : 'Disabled'}</TooltipContent>
+                          </Tooltip>
+                          
+                          <Tooltip>
+                            <TooltipTrigger>
+                              <Badge variant={lbConfig.failoverEnabled ? "default" : "secondary"} className="flex items-center gap-1">
+                                <Activity className="h-3 w-3" />
+                                Failover
+                              </Badge>
+                            </TooltipTrigger>
+                            <TooltipContent>Failover {lbConfig.failoverEnabled ? 'Enabled' : 'Disabled'}</TooltipContent>
+                          </Tooltip>
+                          
+                          {lbConfig.stickySession && (
+                            <Tooltip>
+                              <TooltipTrigger>
+                                <Badge variant="default" className="flex items-center gap-1">
+                                  <Clock className="h-3 w-3" />
+                                  Sticky
+                                </Badge>
+                              </TooltipTrigger>
+                              <TooltipContent>Sticky Sessions Enabled</TooltipContent>
+                            </Tooltip>
+                          )}
+                          
+                          {lbConfig.retryEnabled && (
+                            <Tooltip>
+                              <TooltipTrigger>
+                                <Badge variant="outline" className="flex items-center gap-1">
+                                  <RefreshCw className="h-3 w-3" />
+                                  {lbConfig.maxRetries}x
+                                </Badge>
+                              </TooltipTrigger>
+                              <TooltipContent>Retries: {lbConfig.maxRetries} attempts</TooltipContent>
+                            </Tooltip>
+                          )}
+                        </>
+                      ) : (
+                        <Link href="/dashboard/load-balancing">
+                          <Badge variant="outline" className="text-muted-foreground cursor-pointer hover:bg-accent">
+                            <Settings className="h-3 w-3 mr-1" />
+                            Configure Load Balancing
+                          </Badge>
+                        </Link>
+                      )}
+                    </div>
+                  </TooltipProvider>
                 </CardHeader>
 
                 <CollapsibleContent>
@@ -497,7 +623,8 @@ export default function BackendsPage() {
                 </CollapsibleContent>
               </Card>
             </Collapsible>
-          ))}
+          );
+          })}
         </div>
       )}
 
@@ -529,23 +656,15 @@ export default function BackendsPage() {
                 placeholder="Production API servers"
               />
             </div>
-            <div className="grid gap-2">
-              <Label htmlFor="cluster-strategy">Load Balancing Strategy</Label>
-              <Select
-                value={clusterForm.strategy}
-                onValueChange={(value) => setClusterForm({ ...clusterForm, strategy: value })}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="ROUND_ROBIN">Round Robin</SelectItem>
-                  <SelectItem value="LEAST_CONNECTIONS">Least Connections</SelectItem>
-                  <SelectItem value="RANDOM">Random</SelectItem>
-                  <SelectItem value="IP_HASH">IP Hash</SelectItem>
-                  <SelectItem value="WEIGHTED_ROUND_ROBIN">Weighted Round Robin</SelectItem>
-                </SelectContent>
-              </Select>
+            <div className="rounded-lg border p-3 bg-muted/50">
+              <p className="text-sm text-muted-foreground flex items-center gap-2">
+                <Settings className="h-4 w-4" />
+                Configure load balancing strategy and advanced settings in the{' '}
+                <Link href="/dashboard/load-balancing" className="text-primary underline">
+                  Load Balancing
+                </Link>{' '}
+                section.
+              </p>
             </div>
           </div>
           <DialogFooter>
