@@ -1198,35 +1198,57 @@ async function main() {
     {
       slug: 'api-main-prod',
       name: 'Main API Production',
-      description: 'Primary production API endpoint with load balancing',
+      description: 'Primary production API endpoint with full reverse proxy and cookie-based session affinity',
       type: 'LOAD_BALANCE' as const,
       clusterId: productionCluster.id,
       isActive: true,
       totalRequests: BigInt(125430),
       totalErrors: BigInt(234),
       avgLatencyMs: 45.2,
+      // Reverse proxy with session affinity for authenticated users
+      proxyMode: 'REVERSE_PROXY' as const,
+      sessionAffinity: 'COOKIE' as const,
+      affinityCookieName: '_api_session',
+      affinityTtlSeconds: 7200, // 2 hours
+      rewriteLocationHeader: true,
+      rewriteCookieDomain: true,
+      rewriteCorsHeaders: true,
+      websocketEnabled: true,
     },
     {
       slug: 'api-canary-v2',
       name: 'Canary API v2',
-      description: 'Canary release endpoint for API version 2',
+      description: 'Smart proxy mode that adapts to response type',
       type: 'LOAD_BALANCE' as const,
       clusterId: canaryCluster.id,
       isActive: true,
       totalRequests: BigInt(8920),
       totalErrors: BigInt(12),
       avgLatencyMs: 52.8,
+      // Smart mode for canary - automatically handles different response types
+      proxyMode: 'SMART' as const,
+      sessionAffinity: 'IP_HASH' as const,
+      affinityTtlSeconds: 3600,
+      addPathPrefix: '/v2',
     },
     {
       slug: 'webhook-ingest',
       name: 'Webhook Ingestion',
-      description: 'Endpoint for receiving external webhooks',
+      description: 'Passthrough proxy for external webhooks - no URL rewriting',
       type: 'PROXY' as const,
       clusterId: productionCluster.id,
       isActive: true,
       totalRequests: BigInt(45670),
       totalErrors: BigInt(89),
       avgLatencyMs: 28.4,
+      // Passthrough mode for webhooks - preserve original headers
+      proxyMode: 'PASSTHROUGH' as const,
+      sessionAffinity: 'NONE' as const,
+      preserveHostHeader: true,
+      rewriteLocationHeader: false,
+      rewriteCookieDomain: false,
+      connectTimeout: 10000,
+      readTimeout: 60000,
     },
     {
       slug: 'health-check-mock',
@@ -1238,22 +1260,47 @@ async function main() {
       totalRequests: BigInt(3240),
       totalErrors: BigInt(0),
       avgLatencyMs: 2.1,
+      proxyMode: 'REVERSE_PROXY' as const,
+      sessionAffinity: 'NONE' as const,
       config: { mockResponse: { status: 'healthy', timestamp: new Date().toISOString() }, mockStatus: 200 },
     },
     {
       slug: 'legacy-api-deprecated',
       name: 'Legacy API (Deprecated)',
-      description: 'Deprecated legacy endpoint - will be removed soon',
+      description: 'Redirect mode - sends clients directly to backend',
       type: 'ROUTE' as const,
       clusterId: productionCluster.id,
       isActive: false,
       totalRequests: BigInt(98000),
       totalErrors: BigInt(1250),
       avgLatencyMs: 180.5,
+      // Redirect mode for legacy - exposes backend URL
+      proxyMode: 'REDIRECT' as const,
+      sessionAffinity: 'NONE' as const,
+    },
+    {
+      slug: 'realtime-ws-gateway',
+      name: 'Realtime WebSocket Gateway',
+      description: 'WebSocket endpoint with header-based session affinity for real-time connections',
+      type: 'PROXY' as const,
+      clusterId: productionCluster.id,
+      isActive: true,
+      totalRequests: BigInt(34500),
+      totalErrors: BigInt(45),
+      avgLatencyMs: 12.3,
+      // WebSocket optimized configuration
+      proxyMode: 'REVERSE_PROXY' as const,
+      sessionAffinity: 'HEADER' as const,
+      affinityHeaderName: 'X-Connection-ID',
+      affinityTtlSeconds: 86400, // 24 hours for long-lived WS connections
+      websocketEnabled: true,
+      readTimeout: 300000, // 5 minutes for WebSocket
+      writeTimeout: 300000,
     },
   ];
 
   for (const endpoint of endpointData) {
+    const ep = endpoint as Record<string, unknown>;
     await prisma.trafficEndpoint.upsert({
       where: { slug: endpoint.slug },
       update: {},
@@ -1268,12 +1315,29 @@ async function main() {
         totalRequests: endpoint.totalRequests,
         totalErrors: endpoint.totalErrors,
         avgLatencyMs: endpoint.avgLatencyMs,
-        config: endpoint.config || {},
-        lastRequestAt: new Date(Date.now() - Math.random() * 3600000), // Random time in last hour
+        config: (ep.config || {}) as object,
+        lastRequestAt: new Date(Date.now() - Math.random() * 3600000),
+        // Proxy configuration
+        proxyMode: (ep.proxyMode || 'REVERSE_PROXY') as 'REVERSE_PROXY' | 'PASSTHROUGH' | 'REDIRECT' | 'SMART',
+        sessionAffinity: (ep.sessionAffinity || 'NONE') as 'NONE' | 'COOKIE' | 'IP_HASH' | 'HEADER',
+        affinityCookieName: (ep.affinityCookieName as string) || '_tcp_affinity',
+        affinityHeaderName: (ep.affinityHeaderName as string) || null,
+        affinityTtlSeconds: (ep.affinityTtlSeconds as number) || 3600,
+        connectTimeout: (ep.connectTimeout as number) || 5000,
+        readTimeout: (ep.readTimeout as number) || 30000,
+        writeTimeout: (ep.writeTimeout as number) || 30000,
+        rewriteHostHeader: ep.rewriteHostHeader !== undefined ? (ep.rewriteHostHeader as boolean) : true,
+        rewriteLocationHeader: ep.rewriteLocationHeader !== undefined ? (ep.rewriteLocationHeader as boolean) : true,
+        rewriteCookieDomain: ep.rewriteCookieDomain !== undefined ? (ep.rewriteCookieDomain as boolean) : true,
+        rewriteCorsHeaders: ep.rewriteCorsHeaders !== undefined ? (ep.rewriteCorsHeaders as boolean) : true,
+        preserveHostHeader: (ep.preserveHostHeader as boolean) || false,
+        stripPathPrefix: (ep.stripPathPrefix as string) || null,
+        addPathPrefix: (ep.addPathPrefix as string) || null,
+        websocketEnabled: ep.websocketEnabled !== undefined ? (ep.websocketEnabled as boolean) : true,
       },
     });
   }
-  console.log('Created traffic endpoints');
+  console.log('Created traffic endpoints with proxy configurations');
 
   console.log('\nSeeding completed successfully!');
   console.log('\nDemo Organizations:');

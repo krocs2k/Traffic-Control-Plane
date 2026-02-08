@@ -92,7 +92,42 @@ export async function PATCH(
     }
 
     const body = await request.json();
-    const { name, description, type, clusterId, policyId, config, isActive } = body;
+    const {
+      name,
+      description,
+      type,
+      clusterId,
+      policyId,
+      config,
+      isActive,
+      customDomain,
+      proxyMode,
+      sessionAffinity,
+      affinityCookieName,
+      affinityHeaderName,
+      affinityTtlSeconds,
+      connectTimeout,
+      readTimeout,
+      writeTimeout,
+      rewriteHostHeader,
+      rewriteLocationHeader,
+      rewriteCookieDomain,
+      rewriteCorsHeaders,
+      preserveHostHeader,
+      stripPathPrefix,
+      addPathPrefix,
+      websocketEnabled,
+    } = body;
+
+    // Check if custom domain is already in use by another endpoint
+    if (customDomain && customDomain !== endpoint.customDomain) {
+      const existingDomain = await prisma.trafficEndpoint.findUnique({
+        where: { customDomain }
+      });
+      if (existingDomain && existingDomain.id !== id) {
+        return NextResponse.json({ error: 'Custom domain is already in use' }, { status: 400 });
+      }
+    }
 
     const updated = await prisma.trafficEndpoint.update({
       where: { id },
@@ -103,7 +138,24 @@ export async function PATCH(
         ...(clusterId !== undefined && { clusterId: clusterId || null }),
         ...(policyId !== undefined && { policyId: policyId || null }),
         ...(config !== undefined && { config }),
-        ...(isActive !== undefined && { isActive })
+        ...(isActive !== undefined && { isActive }),
+        ...(customDomain !== undefined && { customDomain: customDomain || null }),
+        ...(proxyMode !== undefined && { proxyMode }),
+        ...(sessionAffinity !== undefined && { sessionAffinity }),
+        ...(affinityCookieName !== undefined && { affinityCookieName }),
+        ...(affinityHeaderName !== undefined && { affinityHeaderName: affinityHeaderName || null }),
+        ...(affinityTtlSeconds !== undefined && { affinityTtlSeconds }),
+        ...(connectTimeout !== undefined && { connectTimeout }),
+        ...(readTimeout !== undefined && { readTimeout }),
+        ...(writeTimeout !== undefined && { writeTimeout }),
+        ...(rewriteHostHeader !== undefined && { rewriteHostHeader }),
+        ...(rewriteLocationHeader !== undefined && { rewriteLocationHeader }),
+        ...(rewriteCookieDomain !== undefined && { rewriteCookieDomain }),
+        ...(rewriteCorsHeaders !== undefined && { rewriteCorsHeaders }),
+        ...(preserveHostHeader !== undefined && { preserveHostHeader }),
+        ...(stripPathPrefix !== undefined && { stripPathPrefix: stripPathPrefix || null }),
+        ...(addPathPrefix !== undefined && { addPathPrefix: addPathPrefix || null }),
+        ...(websocketEnabled !== undefined && { websocketEnabled }),
       }
     });
 
@@ -113,7 +165,7 @@ export async function PATCH(
       action: 'endpoint.updated',
       resourceType: 'endpoint',
       resourceId: id,
-      details: { name, type, isActive },
+      details: { name, type, isActive, proxyMode, sessionAffinity, customDomain },
       ipAddress: getClientIP(request)
     });
 

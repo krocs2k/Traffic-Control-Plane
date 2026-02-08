@@ -14,10 +14,11 @@ import {
   Copy,
   ExternalLink,
   CheckCircle2,
-  XCircle,
-  Activity,
-  Clock,
   Globe,
+  Settings,
+  Shield,
+  Zap,
+  ArrowRightLeft,
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -26,6 +27,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Switch } from '@/components/ui/switch';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Dialog,
   DialogContent,
@@ -65,6 +67,8 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Separator } from '@/components/ui/separator';
 import { toast } from 'sonner';
 
 interface Cluster {
@@ -87,6 +91,23 @@ interface Endpoint {
   type: string;
   clusterId: string | null;
   policyId: string | null;
+  customDomain: string | null;
+  proxyMode: string;
+  sessionAffinity: string;
+  affinityCookieName: string;
+  affinityHeaderName: string | null;
+  affinityTtlSeconds: number;
+  connectTimeout: number;
+  readTimeout: number;
+  writeTimeout: number;
+  rewriteHostHeader: boolean;
+  rewriteLocationHeader: boolean;
+  rewriteCookieDomain: boolean;
+  rewriteCorsHeaders: boolean;
+  preserveHostHeader: boolean;
+  stripPathPrefix: string | null;
+  addPathPrefix: string | null;
+  websocketEnabled: boolean;
   config: Record<string, unknown>;
   isActive: boolean;
   totalRequests: number;
@@ -105,6 +126,23 @@ interface EndpointForm {
   type: string;
   clusterId: string;
   policyId: string;
+  customDomain: string;
+  proxyMode: string;
+  sessionAffinity: string;
+  affinityCookieName: string;
+  affinityHeaderName: string;
+  affinityTtlSeconds: number;
+  connectTimeout: number;
+  readTimeout: number;
+  writeTimeout: number;
+  rewriteHostHeader: boolean;
+  rewriteLocationHeader: boolean;
+  rewriteCookieDomain: boolean;
+  rewriteCorsHeaders: boolean;
+  preserveHostHeader: boolean;
+  stripPathPrefix: string;
+  addPathPrefix: string;
+  websocketEnabled: boolean;
   isActive: boolean;
 }
 
@@ -114,6 +152,46 @@ const ENDPOINT_TYPES = [
   { value: 'PROXY', label: 'Proxy', description: 'Proxy requests to backends' },
   { value: 'MOCK', label: 'Mock', description: 'Return mock responses' },
 ];
+
+const PROXY_MODES = [
+  { value: 'REVERSE_PROXY', label: 'Reverse Proxy', description: 'Full URL masking with header rewriting' },
+  { value: 'SMART', label: 'Smart', description: 'Automatically decide based on request/response' },
+  { value: 'PASSTHROUGH', label: 'Passthrough', description: 'Forward requests without URL rewriting' },
+  { value: 'REDIRECT', label: 'Redirect', description: 'HTTP redirect to backend URL (exposes backend)' },
+];
+
+const SESSION_AFFINITY_MODES = [
+  { value: 'NONE', label: 'None', description: 'No session affinity' },
+  { value: 'COOKIE', label: 'Cookie', description: 'Use cookie to maintain backend assignment' },
+  { value: 'IP_HASH', label: 'IP Hash', description: 'Hash client IP for consistent routing' },
+  { value: 'HEADER', label: 'Header', description: 'Use specific header value for routing' },
+];
+
+const DEFAULT_FORM: EndpointForm = {
+  name: '',
+  description: '',
+  type: 'LOAD_BALANCE',
+  clusterId: '__none__',
+  policyId: '__none__',
+  customDomain: '',
+  proxyMode: 'REVERSE_PROXY',
+  sessionAffinity: 'NONE',
+  affinityCookieName: '_tcp_affinity',
+  affinityHeaderName: '',
+  affinityTtlSeconds: 3600,
+  connectTimeout: 5000,
+  readTimeout: 30000,
+  writeTimeout: 30000,
+  rewriteHostHeader: true,
+  rewriteLocationHeader: true,
+  rewriteCookieDomain: true,
+  rewriteCorsHeaders: true,
+  preserveHostHeader: false,
+  stripPathPrefix: '',
+  addPathPrefix: '',
+  websocketEnabled: true,
+  isActive: true,
+};
 
 export default function EndpointsPage() {
   const { data: session, status } = useSession() || {};
@@ -126,16 +204,10 @@ export default function EndpointsPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [selectedEndpoint, setSelectedEndpoint] = useState<Endpoint | null>(null);
-  const [form, setForm] = useState<EndpointForm>({
-    name: '',
-    description: '',
-    type: 'LOAD_BALANCE',
-    clusterId: '__none__',
-    policyId: '__none__',
-    isActive: true,
-  });
+  const [form, setForm] = useState<EndpointForm>(DEFAULT_FORM);
   const [saving, setSaving] = useState(false);
   const [copiedSlug, setCopiedSlug] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState('basic');
 
   useEffect(() => {
     if (status === 'unauthenticated') {
@@ -187,14 +259,8 @@ export default function EndpointsPage() {
 
   const openCreateDialog = () => {
     setSelectedEndpoint(null);
-    setForm({
-      name: '',
-      description: '',
-      type: 'LOAD_BALANCE',
-      clusterId: '__none__',
-      policyId: '__none__',
-      isActive: true,
-    });
+    setForm(DEFAULT_FORM);
+    setActiveTab('basic');
     setDialogOpen(true);
   };
 
@@ -207,8 +273,26 @@ export default function EndpointsPage() {
       type: endpoint.type,
       clusterId: endpoint.clusterId || '__none__',
       policyId: endpoint.policyId || '__none__',
+      customDomain: endpoint.customDomain || '',
+      proxyMode: endpoint.proxyMode,
+      sessionAffinity: endpoint.sessionAffinity,
+      affinityCookieName: endpoint.affinityCookieName,
+      affinityHeaderName: endpoint.affinityHeaderName || '',
+      affinityTtlSeconds: endpoint.affinityTtlSeconds,
+      connectTimeout: endpoint.connectTimeout,
+      readTimeout: endpoint.readTimeout,
+      writeTimeout: endpoint.writeTimeout,
+      rewriteHostHeader: endpoint.rewriteHostHeader,
+      rewriteLocationHeader: endpoint.rewriteLocationHeader,
+      rewriteCookieDomain: endpoint.rewriteCookieDomain,
+      rewriteCorsHeaders: endpoint.rewriteCorsHeaders,
+      preserveHostHeader: endpoint.preserveHostHeader,
+      stripPathPrefix: endpoint.stripPathPrefix || '',
+      addPathPrefix: endpoint.addPathPrefix || '',
+      websocketEnabled: endpoint.websocketEnabled,
       isActive: endpoint.isActive,
     });
+    setActiveTab('basic');
     setDialogOpen(true);
   };
 
@@ -224,6 +308,10 @@ export default function EndpointsPage() {
         ...form,
         clusterId: form.clusterId === '__none__' ? null : form.clusterId,
         policyId: form.policyId === '__none__' ? null : form.policyId,
+        customDomain: form.customDomain.trim() || null,
+        affinityHeaderName: form.affinityHeaderName.trim() || null,
+        stripPathPrefix: form.stripPathPrefix.trim() || null,
+        addPathPrefix: form.addPathPrefix.trim() || null,
         orgId: session?.user?.currentOrgId,
       };
 
@@ -293,9 +381,9 @@ export default function EndpointsPage() {
     }
   };
 
-  const copyEndpointUrl = (slug: string) => {
+  const copyEndpointUrl = (slug: string, customDomain?: string | null) => {
     const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
-    const url = `${baseUrl}/e/${slug}`;
+    const url = customDomain ? `https://${customDomain}` : `${baseUrl}/e/${slug}`;
     navigator.clipboard.writeText(url);
     setCopiedSlug(slug);
     toast.success('URL copied to clipboard');
@@ -314,6 +402,16 @@ export default function EndpointsPage() {
       case 'ROUTE': return 'bg-purple-500';
       case 'PROXY': return 'bg-green-500';
       case 'MOCK': return 'bg-yellow-500';
+      default: return 'bg-gray-500';
+    }
+  };
+
+  const getProxyModeColor = (mode: string): string => {
+    switch (mode) {
+      case 'REVERSE_PROXY': return 'bg-emerald-500';
+      case 'SMART': return 'bg-violet-500';
+      case 'PASSTHROUGH': return 'bg-amber-500';
+      case 'REDIRECT': return 'bg-rose-500';
       default: return 'bg-gray-500';
     }
   };
@@ -340,7 +438,7 @@ export default function EndpointsPage() {
             Traffic Endpoints
           </h1>
           <p className="text-muted-foreground">
-            Create and manage ingestion URLs for traffic distribution
+            Create and manage ingestion URLs with reverse proxy capabilities
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -350,58 +448,56 @@ export default function EndpointsPage() {
           </Button>
           <Button onClick={openCreateDialog}>
             <Plus className="h-4 w-4 mr-2" />
-            Create Endpoint
+            New Endpoint
           </Button>
         </div>
       </div>
 
-      {/* Stats Cards */}
-      <div className="grid gap-4 md:grid-cols-4">
+      {/* Stats */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Total Endpoints</CardTitle>
-            <Link2 className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{endpoints.length}</div>
-            <p className="text-xs text-muted-foreground">{activeEndpoints} active</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Total Requests</CardTitle>
-            <Activity className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{formatNumber(totalRequests)}</div>
-            <p className="text-xs text-muted-foreground">Across all endpoints</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Error Rate</CardTitle>
-            <XCircle className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">
-              {totalRequests > 0 ? ((totalErrors / totalRequests) * 100).toFixed(2) : '0.00'}%
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-2 text-muted-foreground mb-1">
+              <Globe className="h-4 w-4" />
+              <span className="text-sm">Active Endpoints</span>
             </div>
-            <p className="text-xs text-muted-foreground">{formatNumber(totalErrors)} errors</p>
+            <div className="text-2xl font-bold">
+              {activeEndpoints} / {endpoints.length}
+            </div>
           </CardContent>
         </Card>
         <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Avg Latency</CardTitle>
-            <Clock className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-2 text-muted-foreground mb-1">
+              <ArrowRightLeft className="h-4 w-4" />
+              <span className="text-sm">Total Requests</span>
+            </div>
+            <div className="text-2xl font-bold">{formatNumber(totalRequests)}</div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-2 text-muted-foreground mb-1">
+              <Shield className="h-4 w-4" />
+              <span className="text-sm">Total Errors</span>
+            </div>
+            <div className={`text-2xl font-bold ${totalErrors > 0 ? 'text-red-500' : ''}`}>
+              {formatNumber(totalErrors)}
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-2 text-muted-foreground mb-1">
+              <Zap className="h-4 w-4" />
+              <span className="text-sm">Avg Latency</span>
+            </div>
             <div className="text-2xl font-bold">
               {endpoints.length > 0
                 ? (endpoints.reduce((sum, e) => sum + e.avgLatencyMs, 0) / endpoints.length).toFixed(0)
                 : '0'}
               ms
             </div>
-            <p className="text-xs text-muted-foreground">Average response time</p>
           </CardContent>
         </Card>
       </div>
@@ -411,7 +507,7 @@ export default function EndpointsPage() {
         <CardHeader>
           <CardTitle>Endpoints</CardTitle>
           <CardDescription>
-            Each endpoint has a unique URL that distributes traffic based on its configuration
+            Each endpoint provides a unique URL with configurable proxy behavior and session affinity
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -434,9 +530,9 @@ export default function EndpointsPage() {
                   <TableHead>Name</TableHead>
                   <TableHead>URL</TableHead>
                   <TableHead>Type</TableHead>
-                  <TableHead>Target</TableHead>
+                  <TableHead>Proxy Mode</TableHead>
+                  <TableHead>Affinity</TableHead>
                   <TableHead className="text-right">Requests</TableHead>
-                  <TableHead className="text-right">Errors</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead></TableHead>
                 </TableRow>
@@ -455,30 +551,38 @@ export default function EndpointsPage() {
                       </div>
                     </TableCell>
                     <TableCell>
-                      <div className="flex items-center gap-2">
-                        <code className="text-xs bg-muted px-2 py-1 rounded font-mono">
-                          /e/{endpoint.slug}
-                        </code>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-6 w-6 p-0"
-                          onClick={() => copyEndpointUrl(endpoint.slug)}
-                        >
-                          {copiedSlug === endpoint.slug ? (
-                            <CheckCircle2 className="h-3 w-3 text-green-500" />
-                          ) : (
-                            <Copy className="h-3 w-3" />
-                          )}
-                        </Button>
-                        <a
-                          href={`/e/${endpoint.slug}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-muted-foreground hover:text-foreground"
-                        >
-                          <ExternalLink className="h-3 w-3" />
-                        </a>
+                      <div className="flex flex-col gap-1">
+                        <div className="flex items-center gap-2">
+                          <code className="text-xs bg-muted px-2 py-1 rounded font-mono">
+                            /e/{endpoint.slug}
+                          </code>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 w-6 p-0"
+                            onClick={() => copyEndpointUrl(endpoint.slug, endpoint.customDomain)}
+                          >
+                            {copiedSlug === endpoint.slug ? (
+                              <CheckCircle2 className="h-3 w-3 text-green-500" />
+                            ) : (
+                              <Copy className="h-3 w-3" />
+                            )}
+                          </Button>
+                          <a
+                            href={`/e/${endpoint.slug}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-muted-foreground hover:text-foreground"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                          </a>
+                        </div>
+                        {endpoint.customDomain && (
+                          <div className="text-xs text-emerald-600 flex items-center gap-1">
+                            <Globe className="h-3 w-3" />
+                            {endpoint.customDomain}
+                          </div>
+                        )}
                       </div>
                     </TableCell>
                     <TableCell>
@@ -487,26 +591,17 @@ export default function EndpointsPage() {
                       </Badge>
                     </TableCell>
                     <TableCell>
-                      {endpoint.cluster ? (
-                        <div className="text-sm">
-                          <span className="font-medium">{endpoint.cluster.name}</span>
-                          <span className="text-xs text-muted-foreground ml-1">({endpoint.cluster.strategy})</span>
-                        </div>
-                      ) : endpoint.policy ? (
-                        <div className="text-sm">
-                          <span className="font-medium">{endpoint.policy.name}</span>
-                        </div>
-                      ) : (
-                        <span className="text-muted-foreground">—</span>
-                      )}
+                      <Badge variant="outline" className={`${getProxyModeColor(endpoint.proxyMode)} text-white border-0`}>
+                        {endpoint.proxyMode.replace('_', ' ')}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <span className="text-sm text-muted-foreground">
+                        {endpoint.sessionAffinity === 'NONE' ? '—' : endpoint.sessionAffinity}
+                      </span>
                     </TableCell>
                     <TableCell className="text-right font-mono">
                       {formatNumber(endpoint.totalRequests)}
-                    </TableCell>
-                    <TableCell className="text-right font-mono">
-                      <span className={endpoint.totalErrors > 0 ? 'text-red-500' : ''}>
-                        {formatNumber(endpoint.totalErrors)}
-                      </span>
                     </TableCell>
                     <TableCell>
                       <Switch
@@ -549,110 +644,343 @@ export default function EndpointsPage() {
 
       {/* Create/Edit Dialog */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-2xl max-h-[90vh]">
           <DialogHeader>
             <DialogTitle>
               {selectedEndpoint ? 'Edit Endpoint' : 'Create Endpoint'}
             </DialogTitle>
             <DialogDescription>
-              {selectedEndpoint
-                ? 'Update the endpoint configuration'
-                : 'Create a new traffic ingestion endpoint'}
+              Configure traffic routing, proxy behavior, and session management
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label htmlFor="name">Name</Label>
-              <Input
-                id="name"
-                value={form.name}
-                onChange={(e) => setForm({ ...form, name: e.target.value })}
-                placeholder="My API Endpoint"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="description">Description</Label>
-              <Textarea
-                id="description"
-                value={form.description}
-                onChange={(e) => setForm({ ...form, description: e.target.value })}
-                placeholder="Optional description..."
-                rows={2}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="type">Type</Label>
-              <Select
-                value={form.type}
-                onValueChange={(value) => setForm({ ...form, type: value })}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {ENDPOINT_TYPES.map((t) => (
-                    <SelectItem key={t.value} value={t.value}>
-                      <div>
-                        <div>{t.label}</div>
-                        <div className="text-xs text-muted-foreground">{t.description}</div>
-                      </div>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            {form.type !== 'MOCK' && (
-              <div className="space-y-2">
-                <Label htmlFor="cluster">Backend Cluster</Label>
-                <Select
-                  value={form.clusterId}
-                  onValueChange={(value) => setForm({ ...form, clusterId: value })}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select cluster" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__none__">None</SelectItem>
-                    {clusters.map((c) => (
-                      <SelectItem key={c.id} value={c.id}>
-                        {c.name} ({c.strategy})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
-            {form.type === 'ROUTE' && (
-              <div className="space-y-2">
-                <Label htmlFor="policy">Routing Policy</Label>
-                <Select
-                  value={form.policyId}
-                  onValueChange={(value) => setForm({ ...form, policyId: value })}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select policy" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__none__">None</SelectItem>
-                    {policies.map((p) => (
-                      <SelectItem key={p.id} value={p.id}>
-                        {p.name} ({p.type})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
-            <div className="flex items-center justify-between">
-              <Label htmlFor="isActive">Active</Label>
-              <Switch
-                id="isActive"
-                checked={form.isActive}
-                onCheckedChange={(checked) => setForm({ ...form, isActive: checked })}
-              />
-            </div>
-          </div>
-          <DialogFooter>
+          
+          <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+            <TabsList className="grid w-full grid-cols-4">
+              <TabsTrigger value="basic">Basic</TabsTrigger>
+              <TabsTrigger value="proxy">Proxy</TabsTrigger>
+              <TabsTrigger value="affinity">Affinity</TabsTrigger>
+              <TabsTrigger value="advanced">Advanced</TabsTrigger>
+            </TabsList>
+            
+            <ScrollArea className="h-[400px] pr-4">
+              {/* Basic Tab */}
+              <TabsContent value="basic" className="space-y-4 mt-4">
+                <div className="space-y-2">
+                  <Label htmlFor="name">Name *</Label>
+                  <Input
+                    id="name"
+                    value={form.name}
+                    onChange={(e) => setForm({ ...form, name: e.target.value })}
+                    placeholder="My API Endpoint"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="description">Description</Label>
+                  <Textarea
+                    id="description"
+                    value={form.description}
+                    onChange={(e) => setForm({ ...form, description: e.target.value })}
+                    placeholder="Optional description..."
+                    rows={2}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="type">Endpoint Type</Label>
+                  <Select
+                    value={form.type}
+                    onValueChange={(value) => setForm({ ...form, type: value })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {ENDPOINT_TYPES.map((t) => (
+                        <SelectItem key={t.value} value={t.value}>
+                          <div>
+                            <div className="font-medium">{t.label}</div>
+                            <div className="text-xs text-muted-foreground">{t.description}</div>
+                          </div>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                {form.type !== 'MOCK' && (
+                  <div className="space-y-2">
+                    <Label htmlFor="cluster">Backend Cluster</Label>
+                    <Select
+                      value={form.clusterId}
+                      onValueChange={(value) => setForm({ ...form, clusterId: value })}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select cluster" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__none__">None</SelectItem>
+                        {clusters.map((c) => (
+                          <SelectItem key={c.id} value={c.id}>
+                            {c.name} ({c.strategy})
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+                {form.type === 'ROUTE' && (
+                  <div className="space-y-2">
+                    <Label htmlFor="policy">Routing Policy</Label>
+                    <Select
+                      value={form.policyId}
+                      onValueChange={(value) => setForm({ ...form, policyId: value })}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select policy" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__none__">None</SelectItem>
+                        {policies.map((p) => (
+                          <SelectItem key={p.id} value={p.id}>
+                            {p.name} ({p.type})
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+                <div className="space-y-2">
+                  <Label htmlFor="customDomain">Custom Domain (CNAME)</Label>
+                  <Input
+                    id="customDomain"
+                    value={form.customDomain}
+                    onChange={(e) => setForm({ ...form, customDomain: e.target.value })}
+                    placeholder="api.mycompany.com"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Point a CNAME record to this server to use a custom domain
+                  </p>
+                </div>
+                <div className="flex items-center justify-between pt-2">
+                  <Label htmlFor="isActive">Active</Label>
+                  <Switch
+                    id="isActive"
+                    checked={form.isActive}
+                    onCheckedChange={(checked) => setForm({ ...form, isActive: checked })}
+                  />
+                </div>
+              </TabsContent>
+
+              {/* Proxy Tab */}
+              <TabsContent value="proxy" className="space-y-4 mt-4">
+                <div className="space-y-2">
+                  <Label htmlFor="proxyMode">Proxy Mode</Label>
+                  <Select
+                    value={form.proxyMode}
+                    onValueChange={(value) => setForm({ ...form, proxyMode: value })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {PROXY_MODES.map((m) => (
+                        <SelectItem key={m.value} value={m.value}>
+                          <div>
+                            <div className="font-medium">{m.label}</div>
+                            <div className="text-xs text-muted-foreground">{m.description}</div>
+                          </div>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <Separator />
+                <h4 className="text-sm font-medium">Header Rewriting</h4>
+                
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Label>Rewrite Location Headers</Label>
+                    <p className="text-xs text-muted-foreground">Rewrite redirect URLs to proxy domain</p>
+                  </div>
+                  <Switch
+                    checked={form.rewriteLocationHeader}
+                    onCheckedChange={(checked) => setForm({ ...form, rewriteLocationHeader: checked })}
+                  />
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Label>Rewrite Cookie Domains</Label>
+                    <p className="text-xs text-muted-foreground">Fix Set-Cookie domain attributes</p>
+                  </div>
+                  <Switch
+                    checked={form.rewriteCookieDomain}
+                    onCheckedChange={(checked) => setForm({ ...form, rewriteCookieDomain: checked })}
+                  />
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Label>Rewrite CORS Headers</Label>
+                    <p className="text-xs text-muted-foreground">Fix Access-Control-Allow-Origin</p>
+                  </div>
+                  <Switch
+                    checked={form.rewriteCorsHeaders}
+                    onCheckedChange={(checked) => setForm({ ...form, rewriteCorsHeaders: checked })}
+                  />
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Label>Preserve Host Header</Label>
+                    <p className="text-xs text-muted-foreground">Keep original Host header (don&apos;t rewrite)</p>
+                  </div>
+                  <Switch
+                    checked={form.preserveHostHeader}
+                    onCheckedChange={(checked) => setForm({ ...form, preserveHostHeader: checked })}
+                  />
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Label>WebSocket Support</Label>
+                    <p className="text-xs text-muted-foreground">Enable WebSocket upgrade handling</p>
+                  </div>
+                  <Switch
+                    checked={form.websocketEnabled}
+                    onCheckedChange={(checked) => setForm({ ...form, websocketEnabled: checked })}
+                  />
+                </div>
+              </TabsContent>
+
+              {/* Affinity Tab */}
+              <TabsContent value="affinity" className="space-y-4 mt-4">
+                <div className="space-y-2">
+                  <Label htmlFor="sessionAffinity">Session Affinity Mode</Label>
+                  <Select
+                    value={form.sessionAffinity}
+                    onValueChange={(value) => setForm({ ...form, sessionAffinity: value })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {SESSION_AFFINITY_MODES.map((m) => (
+                        <SelectItem key={m.value} value={m.value}>
+                          <div>
+                            <div className="font-medium">{m.label}</div>
+                            <div className="text-xs text-muted-foreground">{m.description}</div>
+                          </div>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Session affinity ensures a client sticks to the same backend for security, sessions, or WebSocket connections
+                  </p>
+                </div>
+
+                {form.sessionAffinity === 'COOKIE' && (
+                  <div className="space-y-2">
+                    <Label htmlFor="affinityCookieName">Affinity Cookie Name</Label>
+                    <Input
+                      id="affinityCookieName"
+                      value={form.affinityCookieName}
+                      onChange={(e) => setForm({ ...form, affinityCookieName: e.target.value })}
+                      placeholder="_tcp_affinity"
+                    />
+                  </div>
+                )}
+
+                {form.sessionAffinity === 'HEADER' && (
+                  <div className="space-y-2">
+                    <Label htmlFor="affinityHeaderName">Affinity Header Name</Label>
+                    <Input
+                      id="affinityHeaderName"
+                      value={form.affinityHeaderName}
+                      onChange={(e) => setForm({ ...form, affinityHeaderName: e.target.value })}
+                      placeholder="X-User-ID"
+                    />
+                  </div>
+                )}
+
+                {form.sessionAffinity !== 'NONE' && (
+                  <div className="space-y-2">
+                    <Label htmlFor="affinityTtl">Affinity TTL (seconds)</Label>
+                    <Input
+                      id="affinityTtl"
+                      type="number"
+                      value={form.affinityTtlSeconds}
+                      onChange={(e) => setForm({ ...form, affinityTtlSeconds: parseInt(e.target.value) || 3600 })}
+                      placeholder="3600"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      How long the client-to-backend mapping is maintained
+                    </p>
+                  </div>
+                )}
+              </TabsContent>
+
+              {/* Advanced Tab */}
+              <TabsContent value="advanced" className="space-y-4 mt-4">
+                <h4 className="text-sm font-medium">Timeouts (milliseconds)</h4>
+                <div className="grid grid-cols-3 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="connectTimeout">Connect</Label>
+                    <Input
+                      id="connectTimeout"
+                      type="number"
+                      value={form.connectTimeout}
+                      onChange={(e) => setForm({ ...form, connectTimeout: parseInt(e.target.value) || 5000 })}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="readTimeout">Read</Label>
+                    <Input
+                      id="readTimeout"
+                      type="number"
+                      value={form.readTimeout}
+                      onChange={(e) => setForm({ ...form, readTimeout: parseInt(e.target.value) || 30000 })}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="writeTimeout">Write</Label>
+                    <Input
+                      id="writeTimeout"
+                      type="number"
+                      value={form.writeTimeout}
+                      onChange={(e) => setForm({ ...form, writeTimeout: parseInt(e.target.value) || 30000 })}
+                    />
+                  </div>
+                </div>
+
+                <Separator />
+                <h4 className="text-sm font-medium">Path Manipulation</h4>
+                
+                <div className="space-y-2">
+                  <Label htmlFor="stripPathPrefix">Strip Path Prefix</Label>
+                  <Input
+                    id="stripPathPrefix"
+                    value={form.stripPathPrefix}
+                    onChange={(e) => setForm({ ...form, stripPathPrefix: e.target.value })}
+                    placeholder="/api/v1"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Remove this prefix from the path before forwarding to backend
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="addPathPrefix">Add Path Prefix</Label>
+                  <Input
+                    id="addPathPrefix"
+                    value={form.addPathPrefix}
+                    onChange={(e) => setForm({ ...form, addPathPrefix: e.target.value })}
+                    placeholder="/backend"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Add this prefix to the path when forwarding to backend
+                  </p>
+                </div>
+              </TabsContent>
+            </ScrollArea>
+          </Tabs>
+
+          <DialogFooter className="mt-4">
             <Button variant="outline" onClick={() => setDialogOpen(false)}>
               Cancel
             </Button>

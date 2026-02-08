@@ -98,7 +98,32 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { name, description, type, clusterId, policyId, config, orgId } = body;
+    const {
+      name,
+      description,
+      type,
+      clusterId,
+      policyId,
+      config,
+      orgId,
+      customDomain,
+      proxyMode,
+      sessionAffinity,
+      affinityCookieName,
+      affinityHeaderName,
+      affinityTtlSeconds,
+      connectTimeout,
+      readTimeout,
+      writeTimeout,
+      rewriteHostHeader,
+      rewriteLocationHeader,
+      rewriteCookieDomain,
+      rewriteCorsHeaders,
+      preserveHostHeader,
+      stripPathPrefix,
+      addPathPrefix,
+      websocketEnabled,
+    } = body;
 
     if (!name) {
       return NextResponse.json({ error: 'Name is required' }, { status: 400 });
@@ -114,6 +139,16 @@ export async function POST(request: NextRequest) {
     const hasMembership = user.memberships.some(m => m.orgId === targetOrgId);
     if (!hasMembership) {
       return NextResponse.json({ error: 'Access denied to organization' }, { status: 403 });
+    }
+
+    // Check if custom domain is already in use
+    if (customDomain) {
+      const existingDomain = await prisma.trafficEndpoint.findUnique({
+        where: { customDomain }
+      });
+      if (existingDomain) {
+        return NextResponse.json({ error: 'Custom domain is already in use' }, { status: 400 });
+      }
     }
 
     // Generate unique slug
@@ -134,7 +169,24 @@ export async function POST(request: NextRequest) {
         clusterId: clusterId || null,
         policyId: policyId || null,
         config: config || {},
-        isActive: true
+        isActive: true,
+        customDomain: customDomain || null,
+        proxyMode: proxyMode || 'REVERSE_PROXY',
+        sessionAffinity: sessionAffinity || 'NONE',
+        affinityCookieName: affinityCookieName || '_tcp_affinity',
+        affinityHeaderName: affinityHeaderName || null,
+        affinityTtlSeconds: affinityTtlSeconds ?? 3600,
+        connectTimeout: connectTimeout ?? 5000,
+        readTimeout: readTimeout ?? 30000,
+        writeTimeout: writeTimeout ?? 30000,
+        rewriteHostHeader: rewriteHostHeader ?? true,
+        rewriteLocationHeader: rewriteLocationHeader ?? true,
+        rewriteCookieDomain: rewriteCookieDomain ?? true,
+        rewriteCorsHeaders: rewriteCorsHeaders ?? true,
+        preserveHostHeader: preserveHostHeader ?? false,
+        stripPathPrefix: stripPathPrefix || null,
+        addPathPrefix: addPathPrefix || null,
+        websocketEnabled: websocketEnabled ?? true,
       }
     });
 
@@ -144,7 +196,7 @@ export async function POST(request: NextRequest) {
       action: 'endpoint.created',
       resourceType: 'endpoint',
       resourceId: endpoint.id,
-      details: { name, slug, type },
+      details: { name, slug, type, proxyMode, sessionAffinity, customDomain },
       ipAddress: getClientIP(request)
     });
 

@@ -763,6 +763,20 @@ enum EndpointType {
   MOCK
 }
 
+enum SessionAffinityMode {
+  NONE              // No session affinity
+  COOKIE            // Use a cookie to track backend assignment
+  IP_HASH           // Hash client IP to assign backend
+  HEADER            // Use a specific header value
+}
+
+enum ProxyMode {
+  REVERSE_PROXY     // Full reverse proxy - URL stays masked
+  PASSTHROUGH       // Pass through to backend - may expose backend URL
+  REDIRECT          // HTTP redirect to backend URL
+  SMART             // Automatically decide based on request/response
+}
+
 model TrafficEndpoint {
   id              String        @id @default(cuid())
   orgId           String
@@ -774,6 +788,36 @@ model TrafficEndpoint {
   policyId        String?       // Associated routing policy
   config          Json          @default("{}") // Additional configuration (headers, timeouts, etc.)
   isActive        Boolean       @default(true)
+  
+  // Custom domain routing (for CNAME-based routing)
+  customDomain    String?       @unique  // e.g., "api.mycompany.com"
+  
+  // Proxy Configuration
+  proxyMode           ProxyMode           @default(REVERSE_PROXY)
+  sessionAffinity     SessionAffinityMode @default(NONE)
+  affinityCookieName  String              @default("_tcp_affinity") // Cookie name for session affinity
+  affinityHeaderName  String?             // Header name for HEADER affinity mode
+  affinityTtlSeconds  Int                 @default(3600)  // Session affinity TTL
+  
+  // Timeout Configuration (in milliseconds)
+  connectTimeout      Int       @default(5000)
+  readTimeout         Int       @default(30000)
+  writeTimeout        Int       @default(30000)
+  
+  // Header Rewriting
+  rewriteHostHeader   Boolean   @default(true)   // Rewrite Host header to backend
+  rewriteLocationHeader Boolean @default(true)  // Rewrite Location headers in responses
+  rewriteCookieDomain Boolean   @default(true)   // Rewrite Set-Cookie domains
+  rewriteCorsHeaders  Boolean   @default(true)   // Rewrite CORS headers
+  preserveHostHeader  Boolean   @default(false)  // Keep original Host header
+  
+  // Request/Response Modification
+  stripPathPrefix     String?   // Strip this prefix from the path before forwarding
+  addPathPrefix       String?   // Add this prefix to the path when forwarding
+  forwardHeaders      String[]  @default(["X-Forwarded-For", "X-Forwarded-Proto", "X-Forwarded-Host", "X-Real-IP"])
+  
+  // WebSocket Support
+  websocketEnabled    Boolean   @default(true)
   
   // Statistics
   totalRequests   BigInt        @default(0)
@@ -787,8 +831,25 @@ model TrafficEndpoint {
   @@unique([orgId, name])
   @@index([orgId])
   @@index([slug])
+  @@index([customDomain])
   @@index([isActive])
   @@map("traffic_endpoints")
+}
+
+// Session Affinity Mappings - tracks which client is assigned to which backend
+model AffinityMapping {
+  id              String    @id @default(cuid())
+  endpointId      String
+  clientKey       String    // Hashed client identifier (IP, cookie value, or header value)
+  backendId       String    // Assigned backend ID
+  expiresAt       DateTime
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([endpointId, clientKey])
+  @@index([endpointId])
+  @@index([expiresAt])
+  @@map("affinity_mappings")
 }
 
 // ============================================
