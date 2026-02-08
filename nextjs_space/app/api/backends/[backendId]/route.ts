@@ -92,7 +92,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
         ...(protocol && { protocol }),
         ...(weight !== undefined && { weight }),
         ...(status && { status }),
-        ...(healthCheckPath && { healthCheckPath }),
+        ...(typeof healthCheckPath === 'string' && { healthCheckPath }),
         ...(maxConnections !== undefined && { maxConnections }),
         ...(tags && { tags }),
         ...(isActive !== undefined && { isActive }),
