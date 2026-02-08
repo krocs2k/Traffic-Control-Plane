@@ -102,7 +102,7 @@ export default function LoadBalancingPage() {
     sessionTtlMs: 3600000,
     healthCheckEnabled: true,
     healthCheckIntervalMs: 30000,
-    healthCheckPath: '/health',
+    healthCheckPath: '',
     healthCheckTimeoutMs: 5000,
     failoverEnabled: true,
     failoverThreshold: 3,
@@ -234,7 +234,7 @@ export default function LoadBalancingPage() {
       sessionTtlMs: 3600000,
       healthCheckEnabled: true,
       healthCheckIntervalMs: 30000,
-      healthCheckPath: '/health',
+      healthCheckPath: '',
       healthCheckTimeoutMs: 5000,
       failoverEnabled: true,
       failoverThreshold: 3,
@@ -542,8 +542,9 @@ export default function LoadBalancingPage() {
                     <Input
                       value={formData.healthCheckPath}
                       onChange={(e) => setFormData({ ...formData, healthCheckPath: e.target.value })}
-                      placeholder="/health"
+                      placeholder="Defaults to /health if empty"
                     />
+                    <p className="text-xs text-muted-foreground">Leave empty to use default /health path</p>
                   </div>
 
                   <div className="space-y-4">

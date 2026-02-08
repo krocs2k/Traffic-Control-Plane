@@ -234,10 +234,10 @@ export async function POST(request: NextRequest) {
         if (backend.healthCheckPath && backend.healthCheckPath.trim() !== '') {
           healthCheckPath = backend.healthCheckPath;
           healthCheckSource = 'backend';
-        } else if (lbConfig?.healthCheckPath) {
+        } else if (lbConfig?.healthCheckPath && lbConfig.healthCheckPath.trim() !== '') {
           healthCheckPath = lbConfig.healthCheckPath;
           healthCheckSource = 'loadBalancerConfig';
-        } else if (clusterHealthCheck.path) {
+        } else if (clusterHealthCheck.path && clusterHealthCheck.path.trim() !== '') {
           healthCheckPath = clusterHealthCheck.path;
           healthCheckSource = 'cluster';
         } else {

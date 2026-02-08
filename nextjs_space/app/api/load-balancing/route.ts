@@ -107,7 +107,7 @@ export async function POST(request: NextRequest) {
         sessionTtlMs: sessionTtlMs || 3600000,
         healthCheckEnabled: healthCheckEnabled !== false,
         healthCheckIntervalMs: healthCheckIntervalMs || 30000,
-        healthCheckPath: healthCheckPath || '/health',
+        healthCheckPath: typeof healthCheckPath === 'string' ? healthCheckPath : '/health',
         healthCheckTimeoutMs: healthCheckTimeoutMs || 5000,
         failoverEnabled: failoverEnabled !== false,
         failoverThreshold: failoverThreshold || 3,
