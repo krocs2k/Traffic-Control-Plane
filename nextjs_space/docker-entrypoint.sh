@@ -17,10 +17,16 @@ p.user.count().then(c => console.log(c === 0 ? 'true' : 'false')).catch(() => co
 " 2>/dev/null || echo "migrate")
 
 if [ "$NEEDS_SEED" = "migrate" ]; then
+  echo "Running database migration..."
   npx prisma db push --skip-generate
-  npx prisma db seed
+  echo "Seeding database..."
+  node scripts/seed.js
 elif [ "$NEEDS_SEED" = "true" ]; then
-  npx prisma db seed
+  echo "Seeding database..."
+  node scripts/seed.js
+else
+  echo "Database exists, syncing passwords..."
+  node scripts/seed.js || echo "Seed sync skipped"
 fi
 
 exec node server.js

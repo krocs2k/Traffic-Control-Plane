@@ -50,12 +50,16 @@ COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
 
-# Copy seed script dependencies for auto database initialization
-COPY --from=builder /app/scripts ./scripts
+# Copy Prisma CLI binaries for db push/seed commands
+COPY --from=builder /app/node_modules/.bin ./node_modules/.bin
+COPY --from=builder /app/node_modules/prisma ./node_modules/prisma
+
+# Add node_modules/.bin to PATH for prisma CLI access
+ENV PATH="/app/node_modules/.bin:$PATH"
+
+# Copy pre-compiled seed script and dependencies
+COPY --from=builder /app/scripts/compiled ./scripts
 COPY --from=builder /app/node_modules/bcryptjs ./node_modules/bcryptjs
-COPY --from=builder /app/node_modules/tsx ./node_modules/tsx
-COPY --from=builder /app/node_modules/typescript ./node_modules/typescript
-COPY --from=builder /app/node_modules/dotenv ./node_modules/dotenv
 
 # Copy entrypoint script
 COPY docker-entrypoint.sh ./

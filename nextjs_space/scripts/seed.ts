@@ -13,7 +13,7 @@ async function main() {
   // Create test user first (required for auth testing)
   const testUser = await prisma.user.upsert({
     where: { email: 'john@doe.com' },
-    update: {},
+    update: { passwordHash: testPasswordHash },
     create: {
       email: 'john@doe.com',
       name: 'John Doe',
@@ -55,7 +55,7 @@ async function main() {
   // Create demo users
   const alice = await prisma.user.upsert({
     where: { email: 'alice@acme.com' },
-    update: {},
+    update: { passwordHash },
     create: {
       email: 'alice@acme.com',
       name: 'Alice Johnson',
@@ -66,7 +66,7 @@ async function main() {
 
   const bob = await prisma.user.upsert({
     where: { email: 'bob@acme.com' },
-    update: {},
+    update: { passwordHash },
     create: {
       email: 'bob@acme.com',
       name: 'Bob Smith',
@@ -77,7 +77,7 @@ async function main() {
 
   const carol = await prisma.user.upsert({
     where: { email: 'carol@techstart.com' },
-    update: {},
+    update: { passwordHash },
     create: {
       email: 'carol@techstart.com',
       name: 'Carol Williams',
@@ -88,7 +88,7 @@ async function main() {
 
   const dave = await prisma.user.upsert({
     where: { email: 'dave@techstart.com' },
-    update: {},
+    update: { passwordHash },
     create: {
       email: 'dave@techstart.com',
       name: 'Dave Brown',
