@@ -2,9 +2,169 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth-options';
 import { prisma } from '@/lib/db';
-import { HealthCheckStatus } from '@prisma/client';
+import { HealthCheckStatus, BackendStatus } from '@prisma/client';
+import { Socket } from 'net';
 
-// POST - Run health checks for all backends/replicas
+// Helper: Perform real HTTP health check
+async function performHttpHealthCheck(
+  protocol: string,
+  host: string,
+  port: number,
+  healthCheckPath: string,
+  timeoutMs: number = 5000
+): Promise<{ isHealthy: boolean; responseTime: number; statusCode: number; errorMessage: string | null }> {
+  const startTime = Date.now();
+  const url = `${protocol}://${host}:${port}${healthCheckPath || '/health'}`;
+  
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    
+    const response = await fetch(url, {
+      method: 'GET',
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'TrafficControlPlane-HealthCheck/1.0',
+        'Accept': 'application/json, text/plain, */*',
+      },
+    });
+    
+    clearTimeout(timeoutId);
+    const responseTime = Date.now() - startTime;
+    const statusCode = response.status;
+    
+    // Consider 2xx and 3xx as healthy
+    const isHealthy = statusCode >= 200 && statusCode < 400;
+    
+    return {
+      isHealthy,
+      responseTime,
+      statusCode,
+      errorMessage: isHealthy ? null : `HTTP ${statusCode}: ${response.statusText}`,
+    };
+  } catch (error) {
+    const responseTime = Date.now() - startTime;
+    let errorMessage = 'Unknown error';
+    
+    if (error instanceof Error) {
+      if (error.name === 'AbortError') {
+        errorMessage = `Connection timeout after ${timeoutMs}ms`;
+      } else if (error.message.includes('ECONNREFUSED')) {
+        errorMessage = 'Connection refused';
+      } else if (error.message.includes('ENOTFOUND')) {
+        errorMessage = `DNS resolution failed for ${host}`;
+      } else if (error.message.includes('ETIMEDOUT')) {
+        errorMessage = 'Connection timed out';
+      } else if (error.message.includes('ECONNRESET')) {
+        errorMessage = 'Connection reset by peer';
+      } else {
+        errorMessage = error.message;
+      }
+    }
+    
+    return {
+      isHealthy: false,
+      responseTime,
+      statusCode: 0,
+      errorMessage,
+    };
+  }
+}
+
+// Helper: Perform real TCP health check for database replicas
+async function performTcpHealthCheck(
+  host: string,
+  port: number,
+  timeoutMs: number = 5000
+): Promise<{ isHealthy: boolean; responseTime: number; errorMessage: string | null }> {
+  const startTime = Date.now();
+  
+  return new Promise((resolve) => {
+    const socket = new Socket();
+    let resolved = false;
+    
+    const cleanup = () => {
+      if (!resolved) {
+        resolved = true;
+        socket.destroy();
+      }
+    };
+    
+    const timeoutId = setTimeout(() => {
+      cleanup();
+      resolve({
+        isHealthy: false,
+        responseTime: Date.now() - startTime,
+        errorMessage: `Connection timeout after ${timeoutMs}ms`,
+      });
+    }, timeoutMs);
+    
+    socket.connect(port, host, () => {
+      clearTimeout(timeoutId);
+      const responseTime = Date.now() - startTime;
+      cleanup();
+      resolve({
+        isHealthy: true,
+        responseTime,
+        errorMessage: null,
+      });
+    });
+    
+    socket.on('error', (error) => {
+      clearTimeout(timeoutId);
+      const responseTime = Date.now() - startTime;
+      let errorMessage = 'Unknown error';
+      
+      if (error.message.includes('ECONNREFUSED')) {
+        errorMessage = 'Connection refused';
+      } else if (error.message.includes('ENOTFOUND')) {
+        errorMessage = `DNS resolution failed for ${host}`;
+      } else if (error.message.includes('ETIMEDOUT')) {
+        errorMessage = 'Connection timed out';
+      } else if (error.message.includes('ECONNRESET')) {
+        errorMessage = 'Connection reset by peer';
+      } else if (error.message.includes('EHOSTUNREACH')) {
+        errorMessage = 'Host unreachable';
+      } else {
+        errorMessage = error.message;
+      }
+      
+      cleanup();
+      resolve({
+        isHealthy: false,
+        responseTime,
+        errorMessage,
+      });
+    });
+  });
+}
+
+// Determine health status based on response time thresholds
+function determineHealthStatus(
+  isHealthy: boolean,
+  responseTime: number,
+  degradedThresholdMs: number = 500
+): HealthCheckStatus {
+  if (!isHealthy) return 'UNHEALTHY';
+  if (responseTime > degradedThresholdMs) return 'DEGRADED';
+  return 'HEALTHY';
+}
+
+// Map health check status to backend status
+function mapToBackendStatus(healthStatus: HealthCheckStatus): BackendStatus {
+  switch (healthStatus) {
+    case 'HEALTHY':
+      return 'HEALTHY';
+    case 'DEGRADED':
+      return 'HEALTHY'; // Degraded backends can still serve traffic
+    case 'UNHEALTHY':
+    case 'UNKNOWN':
+    default:
+      return 'UNHEALTHY';
+  }
+}
+
+// POST - Run REAL health checks for all backends/replicas
 export async function POST(request: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
@@ -37,73 +197,162 @@ export async function POST(request: NextRequest) {
       where: { orgId, isActive: true },
     });
 
-    const results: { backends: unknown[]; replicas: unknown[] } = { backends: [], replicas: [] };
+    const results: { backends: unknown[]; replicas: unknown[]; summary: unknown } = { 
+      backends: [], 
+      replicas: [],
+      summary: {
+        totalBackends: backends.length,
+        healthyBackends: 0,
+        degradedBackends: 0,
+        unhealthyBackends: 0,
+        totalReplicas: replicas.length,
+        healthyReplicas: 0,
+        unhealthyReplicas: 0,
+      }
+    };
 
-    // Simulate health checks for backends
-    for (const backend of backends) {
-      const startTime = Date.now();
-      // Simulate health check (in production, this would make actual HTTP requests)
-      const isHealthy = Math.random() > 0.1; // 90% healthy
-      const responseTime = Math.floor(Math.random() * 200) + 20;
-      const statusCode = isHealthy ? 200 : Math.random() > 0.5 ? 503 : 500;
-      const status: HealthCheckStatus = isHealthy ? 'HEALTHY' : responseTime > 150 ? 'DEGRADED' : 'UNHEALTHY';
+    // Run REAL health checks for backends (in parallel for efficiency)
+    const backendChecks = await Promise.all(
+      backends.map(async (backend) => {
+        // Extract health check settings from cluster's healthCheck JSON
+        const clusterHealthCheck = (backend.cluster.healthCheck as { timeoutMs?: number; intervalMs?: number }) || {};
+        const timeoutMs = clusterHealthCheck.timeoutMs || 5000;
+        const degradedThreshold = clusterHealthCheck.intervalMs || 500; // Use interval as degraded threshold
+        
+        const checkResult = await performHttpHealthCheck(
+          backend.protocol,
+          backend.host,
+          backend.port,
+          backend.healthCheckPath || '/health',
+          timeoutMs
+        );
+        
+        const status = determineHealthStatus(
+          checkResult.isHealthy,
+          checkResult.responseTime,
+          degradedThreshold
+        );
+        
+        const backendStatus = mapToBackendStatus(status);
 
-      const healthCheck = await prisma.healthCheck.create({
-        data: {
-          backendId: backend.id,
-          endpoint: `${backend.protocol}://${backend.host}:${backend.port}${backend.healthCheckPath}`,
+        // Create health check record
+        const healthCheck = await prisma.healthCheck.create({
+          data: {
+            backendId: backend.id,
+            endpoint: `${backend.protocol}://${backend.host}:${backend.port}${backend.healthCheckPath || '/health'}`,
+            status,
+            responseTime: checkResult.responseTime,
+            statusCode: checkResult.statusCode,
+            errorMessage: checkResult.errorMessage,
+            metadata: { 
+              realCheck: true,
+              checkedAt: new Date().toISOString(),
+              timeoutMs,
+            },
+          },
+        });
+
+        // Update backend status
+        await prisma.backend.update({
+          where: { id: backend.id },
+          data: {
+            status: backendStatus,
+            lastHealthCheck: new Date(),
+          },
+        });
+
+        // Update summary counts
+        if (status === 'HEALTHY') (results.summary as Record<string, number>).healthyBackends++;
+        else if (status === 'DEGRADED') (results.summary as Record<string, number>).degradedBackends++;
+        else (results.summary as Record<string, number>).unhealthyBackends++;
+
+        return { 
+          backend: backend.name, 
+          host: backend.host,
+          port: backend.port,
           status,
-          responseTime,
-          statusCode,
-          errorMessage: isHealthy ? null : 'Connection refused',
-          metadata: { simulatedAt: new Date().toISOString() },
-        },
-      });
+          responseTime: checkResult.responseTime,
+          statusCode: checkResult.statusCode,
+          errorMessage: checkResult.errorMessage,
+          id: healthCheck.id,
+        };
+      })
+    );
 
-      // Update backend status
-      await prisma.backend.update({
-        where: { id: backend.id },
-        data: {
-          status: isHealthy ? 'HEALTHY' : 'UNHEALTHY',
-          lastHealthCheck: new Date(),
-        },
-      });
+    results.backends = backendChecks;
 
-      results.backends.push({ backend: backend.name, ...healthCheck });
-    }
+    // Run REAL health checks for replicas (TCP connection test)
+    const replicaChecks = await Promise.all(
+      replicas.map(async (replica) => {
+        const timeoutMs = 5000;
+        
+        const checkResult = await performTcpHealthCheck(
+          replica.host,
+          replica.port,
+          timeoutMs
+        );
+        
+        const status: HealthCheckStatus = checkResult.isHealthy ? 'HEALTHY' : 'UNHEALTHY';
+        
+        // Determine replica status based on health and existing lag
+        let replicaStatus: 'SYNCED' | 'LAGGING' | 'CATCHING_UP' | 'OFFLINE' = 'OFFLINE';
+        if (checkResult.isHealthy) {
+          // Keep existing lag-based status if healthy
+          if (replica.status === 'SYNCED' || replica.status === 'LAGGING' || replica.status === 'CATCHING_UP') {
+            replicaStatus = replica.status;
+          } else {
+            replicaStatus = 'SYNCED';
+          }
+        }
 
-    // Simulate health checks for replicas
-    for (const replica of replicas) {
-      const isHealthy = Math.random() > 0.15; // 85% healthy
-      const responseTime = Math.floor(Math.random() * 150) + 10;
-      const status: HealthCheckStatus = isHealthy ? 'HEALTHY' : 'UNHEALTHY';
+        // Create health check record
+        const healthCheck = await prisma.healthCheck.create({
+          data: {
+            replicaId: replica.id,
+            endpoint: `postgres://${replica.host}:${replica.port}`,
+            status,
+            responseTime: checkResult.responseTime,
+            statusCode: checkResult.isHealthy ? 200 : 0,
+            errorMessage: checkResult.errorMessage,
+            metadata: { 
+              realCheck: true,
+              checkedAt: new Date().toISOString(),
+              timeoutMs,
+              checkType: 'TCP',
+            },
+          },
+        });
 
-      const healthCheck = await prisma.healthCheck.create({
-        data: {
-          replicaId: replica.id,
-          endpoint: `postgres://${replica.host}:${replica.port}`,
+        // Update replica status
+        await prisma.readReplica.update({
+          where: { id: replica.id },
+          data: {
+            status: replicaStatus,
+            lastHealthCheck: new Date(),
+          },
+        });
+
+        // Update summary counts
+        if (checkResult.isHealthy) (results.summary as Record<string, number>).healthyReplicas++;
+        else (results.summary as Record<string, number>).unhealthyReplicas++;
+
+        return { 
+          replica: replica.name,
+          host: replica.host,
+          port: replica.port,
           status,
-          responseTime,
-          statusCode: isHealthy ? 200 : 0,
-          errorMessage: isHealthy ? null : 'Connection timeout',
-          metadata: { simulatedAt: new Date().toISOString() },
-        },
-      });
+          replicaStatus,
+          responseTime: checkResult.responseTime,
+          errorMessage: checkResult.errorMessage,
+          id: healthCheck.id,
+        };
+      })
+    );
 
-      // Update replica status
-      await prisma.readReplica.update({
-        where: { id: replica.id },
-        data: {
-          status: isHealthy ? (Math.random() > 0.3 ? 'SYNCED' : 'CATCHING_UP') : 'OFFLINE',
-          lastHealthCheck: new Date(),
-        },
-      });
-
-      results.replicas.push({ replica: replica.name, ...healthCheck });
-    }
+    results.replicas = replicaChecks;
 
     return NextResponse.json({
-      message: 'Health checks completed',
+      message: 'Real health checks completed',
       checkedAt: new Date().toISOString(),
       results,
     });
