@@ -192,6 +192,12 @@ export async function POST(request: NextRequest) {
       include: { cluster: true },
     });
 
+    // Get all load balancer configs for clusters (to get cluster-level health check settings)
+    const loadBalancerConfigs = await prisma.loadBalancerConfig.findMany({
+      where: { orgId },
+    });
+    const lbConfigMap = new Map(loadBalancerConfigs.map(c => [c.clusterId, c]));
+
     // Get all active replicas
     const replicas = await prisma.readReplica.findMany({
       where: { orgId, isActive: true },
@@ -214,16 +220,25 @@ export async function POST(request: NextRequest) {
     // Run REAL health checks for backends (in parallel for efficiency)
     const backendChecks = await Promise.all(
       backends.map(async (backend) => {
-        // Extract health check settings from cluster's healthCheck JSON
+        // Get LoadBalancerConfig for this backend's cluster (for cluster-level health check settings)
+        const lbConfig = lbConfigMap.get(backend.clusterId);
+        
+        // Priority: Backend's healthCheckPath > LoadBalancerConfig's healthCheckPath > default '/health'
+        // If backend has a non-default path, use it; otherwise use cluster config
+        const healthCheckPath = backend.healthCheckPath !== '/health' 
+          ? backend.healthCheckPath 
+          : (lbConfig?.healthCheckPath || backend.healthCheckPath || '/health');
+        
+        // Use LoadBalancerConfig settings if available, otherwise fall back to cluster's healthCheck JSON
         const clusterHealthCheck = (backend.cluster.healthCheck as { timeoutMs?: number; intervalMs?: number }) || {};
-        const timeoutMs = clusterHealthCheck.timeoutMs || 5000;
-        const degradedThreshold = clusterHealthCheck.intervalMs || 500; // Use interval as degraded threshold
+        const timeoutMs = lbConfig?.healthCheckTimeoutMs || clusterHealthCheck.timeoutMs || 5000;
+        const degradedThreshold = lbConfig?.healthCheckIntervalMs || clusterHealthCheck.intervalMs || 500;
         
         const checkResult = await performHttpHealthCheck(
           backend.protocol,
           backend.host,
           backend.port,
-          backend.healthCheckPath || '/health',
+          healthCheckPath,
           timeoutMs
         );
         
@@ -239,7 +254,7 @@ export async function POST(request: NextRequest) {
         const healthCheck = await prisma.healthCheck.create({
           data: {
             backendId: backend.id,
-            endpoint: `${backend.protocol}://${backend.host}:${backend.port}${backend.healthCheckPath || '/health'}`,
+            endpoint: `${backend.protocol}://${backend.host}:${backend.port}${healthCheckPath}`,
             status,
             responseTime: checkResult.responseTime,
             statusCode: checkResult.statusCode,
@@ -248,6 +263,8 @@ export async function POST(request: NextRequest) {
               realCheck: true,
               checkedAt: new Date().toISOString(),
               timeoutMs,
+              healthCheckPath,
+              source: backend.healthCheckPath !== '/health' ? 'backend' : (lbConfig ? 'loadBalancerConfig' : 'default'),
             },
           },
         });
@@ -270,6 +287,7 @@ export async function POST(request: NextRequest) {
           backend: backend.name, 
           host: backend.host,
           port: backend.port,
+          healthCheckPath,
           status,
           responseTime: checkResult.responseTime,
           statusCode: checkResult.statusCode,
