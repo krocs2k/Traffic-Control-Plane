@@ -15,22 +15,32 @@ export async function GET(request: NextRequest) {
     }
 
     const { searchParams } = new URL(request.url);
-    const orgId = searchParams.get('orgId');
+    let orgId = searchParams.get('orgId');
 
+    // If orgId not provided, get it from user's membership
     if (!orgId) {
-      return NextResponse.json({ error: 'Organization ID required' }, { status: 400 });
-    }
+      const user = await prisma.user.findUnique({
+        where: { email: session.user.email },
+        include: { memberships: true },
+      });
 
-    // Check user has access to org
-    const member = await prisma.organizationMember.findFirst({
-      where: {
-        orgId,
-        user: { email: session.user.email }
+      if (!user || user.memberships.length === 0) {
+        return NextResponse.json({ error: 'No organization found' }, { status: 404 });
       }
-    });
 
-    if (!member) {
-      return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+      orgId = user.memberships[0].orgId;
+    } else {
+      // Check user has access to the specified org
+      const member = await prisma.organizationMember.findFirst({
+        where: {
+          orgId,
+          user: { email: session.user.email }
+        }
+      });
+
+      if (!member) {
+        return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+      }
     }
 
     const clusters = await prisma.backendCluster.findMany({
@@ -46,7 +56,7 @@ export async function GET(request: NextRequest) {
       orderBy: { name: 'asc' }
     });
 
-    return NextResponse.json({ clusters });
+    return NextResponse.json(clusters);
   } catch (error) {
     console.error('Error fetching clusters:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
