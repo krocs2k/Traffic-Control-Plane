@@ -31,7 +31,6 @@ import {
   AlertCircle,
   Loader2,
   Download,
-  Sparkles,
 } from 'lucide-react';
 
 interface MetricsSummary {
@@ -74,7 +73,6 @@ export default function MetricsPage() {
   const router = useRouter();
   const [metricsData, setMetricsData] = useState<MetricsSummary | null>(null);
   const [loading, setLoading] = useState(true);
-  const [generating, setGenerating] = useState(false);
   const [timeRange, setTimeRange] = useState('24h');
 
   const fetchMetrics = useCallback(async () => {
@@ -99,25 +97,6 @@ export default function MetricsPage() {
       fetchMetrics();
     }
   }, [status, router, fetchMetrics]);
-
-  const generateSampleData = async () => {
-    setGenerating(true);
-    try {
-      const res = await fetch('/api/metrics/generate', { method: 'POST' });
-      if (res.ok) {
-        toast.success('Sample metrics generated');
-        fetchMetrics();
-      } else {
-        const data = await res.json();
-        toast.error(data.error || 'Failed to generate metrics');
-      }
-    } catch (error) {
-      console.error('Error generating metrics:', error);
-      toast.error('Failed to generate sample data');
-    } finally {
-      setGenerating(false);
-    }
-  };
 
   if (status === 'loading' || loading) {
     return (
@@ -153,14 +132,6 @@ export default function MetricsPage() {
           <Button variant="outline" size="sm" onClick={fetchMetrics}>
             <RefreshCw className="h-4 w-4 mr-2" />
             Refresh
-          </Button>
-          <Button variant="outline" size="sm" onClick={generateSampleData} disabled={generating}>
-            {generating ? (
-              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-            ) : (
-              <Sparkles className="h-4 w-4 mr-2" />
-            )}
-            Generate Data
           </Button>
         </div>
       </div>
@@ -279,7 +250,7 @@ export default function MetricsPage() {
                 </ResponsiveContainer>
               ) : (
                 <div className="flex items-center justify-center h-full text-muted-foreground">
-                  No data available. Click "Generate Data" to create sample metrics.
+                  No metrics data available yet. Metrics will appear once traffic flows through your endpoints.
                 </div>
               )}
             </div>

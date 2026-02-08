@@ -31,7 +31,6 @@ import {
   MoreVertical,
   Clock,
   Activity,
-  Zap,
   VolumeX,
   Eye,
   Settings,
@@ -260,20 +259,6 @@ export default function AlertsPage() {
     }
   };
 
-  const simulateAlerts = async () => {
-    try {
-      const res = await fetch('/api/alerts/simulate', { method: 'POST' });
-      if (res.ok) {
-        const data = await res.json();
-        toast.success(data.message);
-        fetchAlerts();
-      }
-    } catch (error) {
-      console.error('Error simulating alerts:', error);
-      toast.error('Failed to simulate alerts');
-    }
-  };
-
   const openEditDialog = (rule: AlertRule) => {
     setEditRule(rule);
     setFormData({
@@ -384,10 +369,6 @@ export default function AlertsPage() {
             <RefreshCw className="h-4 w-4 mr-2" />
             Refresh
           </Button>
-          <Button variant="outline" onClick={simulateAlerts}>
-            <Zap className="h-4 w-4 mr-2" />
-            Simulate Alerts
-          </Button>
         </div>
       </div>
 
@@ -464,11 +445,7 @@ export default function AlertsPage() {
                 <div className="text-center py-12">
                   <CheckCircle className="h-12 w-12 mx-auto text-green-500 mb-4" />
                   <h3 className="text-lg font-semibold">All Clear</h3>
-                  <p className="text-muted-foreground mb-4">No alerts at the moment</p>
-                  <Button variant="outline" onClick={simulateAlerts}>
-                    <Zap className="h-4 w-4 mr-2" />
-                    Simulate Test Alerts
-                  </Button>
+                  <p className="text-muted-foreground">No alerts at the moment. Alerts will appear here when your alert rules are triggered.</p>
                 </div>
               ) : (
                 <ScrollArea className="h-[500px]">

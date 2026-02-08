@@ -226,24 +226,6 @@ export default function ExperimentsPage() {
     }
   };
 
-  const generateMetrics = async (experiment: Experiment) => {
-    try {
-      const res = await fetch(`/api/experiments/${experiment.id}/metrics`, {
-        method: 'POST',
-      });
-
-      if (res.ok) {
-        toast.success('Metrics generated successfully');
-        fetchExperiments();
-      } else {
-        toast.error('Failed to generate metrics');
-      }
-    } catch (error) {
-      console.error('Error generating metrics:', error);
-      toast.error('Failed to generate metrics');
-    }
-  };
-
   const resetForm = () => {
     setFormData({
       name: '',
@@ -498,10 +480,6 @@ export default function ExperimentsPage() {
                                 <DropdownMenuItem onClick={() => handleStatusChange(experiment, 'COMPLETED')}>
                                   <CheckCircle className="h-4 w-4 mr-2 text-blue-500" />
                                   Complete
-                                </DropdownMenuItem>
-                                <DropdownMenuItem onClick={() => generateMetrics(experiment)}>
-                                  <BarChart3 className="h-4 w-4 mr-2" />
-                                  Generate Metrics
                                 </DropdownMenuItem>
                               </>
                             )}
