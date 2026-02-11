@@ -24,12 +24,16 @@ RUN npx tsc scripts/seed.ts --outDir scripts/compiled --esModuleInterop \
     --module commonjs --target es2020 --skipLibCheck --types node \
     || echo "Using pre-compiled seed.js"
 
+# Debug: Show next.config.js content to verify standalone is set
+RUN echo "=== next.config.js content ===" && cat next.config.js && echo "==="
+
 # Build the application (standalone output is hardcoded in next.config.js)
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN yarn build
 
-# Verify standalone output exists
-RUN ls -la .next/standalone/ && ls -la .next/standalone/.next/
+# Debug: Show build output structure
+RUN echo "=== Build output structure ===" && ls -la .next/ && \
+    (ls -la .next/standalone/ 2>/dev/null || echo "No standalone directory found!")
 
 # Production image - use /srv/app to avoid any cached layer conflicts
 FROM base AS runner
