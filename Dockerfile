@@ -1,5 +1,6 @@
 FROM node:20-alpine AS base
 
+# Cache bust: 2026-02-11-v2 - Force rebuild to use next start instead of node server.js
 # Install dependencies only when needed
 FROM base AS deps
 RUN apk add --no-cache libc6-compat wget openssl
