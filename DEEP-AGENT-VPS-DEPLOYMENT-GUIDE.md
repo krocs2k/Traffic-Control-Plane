@@ -231,7 +231,10 @@ RUN npx tsc scripts/seed.ts --outDir scripts/compiled --esModuleInterop \
     || echo "Using pre-compiled seed.js"
 
 # CRITICAL: Force standalone output (env var approach is unreliable)
-RUN sed -i "s/output: process.env.NEXT_OUTPUT_MODE/output: 'standalone'/" next.config.js
+# Note: Include trailing comma in the pattern to match exact syntax
+RUN sed -i "s/output: process.env.NEXT_OUTPUT_MODE,/output: 'standalone',/" next.config.js && \
+    grep -q "output: 'standalone'" next.config.js && echo "Standalone output configured" || \
+    (echo "ERROR: Failed to set standalone output" && exit 1)
 
 # Build the application
 ENV NEXT_TELEMETRY_DISABLED=1
@@ -347,7 +350,10 @@ Use `sed` to force standalone output directly in the config file:
 
 ```dockerfile
 # Force standalone output in next.config.js (env var approach can be unreliable)
-RUN sed -i "s/output: process.env.NEXT_OUTPUT_MODE/output: 'standalone'/" next.config.js
+# IMPORTANT: Include trailing comma in the pattern to match exact syntax
+RUN sed -i "s/output: process.env.NEXT_OUTPUT_MODE,/output: 'standalone',/" next.config.js && \
+    grep -q "output: 'standalone'" next.config.js && echo "Standalone output configured" || \
+    (echo "ERROR: Failed to set standalone output" && exit 1)
 
 # Build the application
 ENV NEXT_TELEMETRY_DISABLED=1
@@ -356,6 +362,8 @@ RUN yarn build
 # Verify standalone output exists
 RUN ls -la .next/standalone/ && ls -la .next/standalone/.next/
 ```
+
+> ⚠️ **CRITICAL:** The `sed` pattern MUST include the trailing comma (`,`) to match the exact syntax in `next.config.js`. Without it, the replacement won't work and standalone output won't be generated.
 
 The verification step ensures the build fails early if standalone output wasn't generated.
 
@@ -698,7 +706,8 @@ Before every git push, verify:
 | **overlay2 filesystem conflict** | Use `/srv/app` as runner WORKDIR, not `/app` |
 | **node_modules symlink issues** | Selective file copying instead of full standalone directory |
 | **standalone output not found** | Add `sed` command to force `output: 'standalone'` in next.config.js |
-| `yarn build` succeeds but no standalone | Verify `sed` command runs BEFORE `yarn build` |
+| `yarn build` succeeds but no standalone | Verify `sed` pattern includes trailing comma: `NEXT_OUTPUT_MODE,` |
+| `sed` replacement doesn't work | Ensure pattern matches exact syntax including comma: `s/...MODE,/...',/` |
 | `sh: prisma: not found` | Set `ENV PATH="/srv/app/node_modules/.bin:$PATH"` and copy `node_modules/.bin` |
 | `Cannot find module 'get-tsconfig'` | Don't use tsx at runtime. Pre-compile seed.ts to JS |
 | `Cannot find type definition file for 'minimatch'` | Add `--types node` flag to tsc command |
