@@ -292,6 +292,9 @@ COPY --from=builder --chown=nextjs:nodejs /build/.next/standalone/package.json .
 # Copy .next build output
 COPY --from=builder --chown=nextjs:nodejs /build/.next/standalone/.next ./.next
 
+# Copy node_modules from standalone output (includes 'next' and runtime deps)
+COPY --from=builder --chown=nextjs:nodejs /build/.next/standalone/node_modules ./node_modules
+
 # Copy static assets
 COPY --from=builder --chown=nextjs:nodejs /build/public ./public
 COPY --from=builder --chown=nextjs:nodejs /build/.next/static ./.next/static
@@ -302,17 +305,7 @@ COPY --from=builder --chown=nextjs:nodejs /build/prisma ./prisma
 # Copy compiled seed script
 COPY --from=builder --chown=nextjs:nodejs /build/scripts/compiled ./scripts
 
-# ====
-# CRITICAL: Pre-create node_modules structure
-# ====
-# Create directories BEFORE copying to avoid symlink conflicts
-RUN mkdir -p ./node_modules/.bin \
-             ./node_modules/.prisma \
-             ./node_modules/@prisma \
-             ./node_modules/prisma \
-             ./node_modules/bcryptjs
-
-# Copy required node_modules from builder
+# Copy additional node_modules needed for Prisma CLI and seeding (not in standalone)
 COPY --from=builder /build/node_modules/.bin ./node_modules/.bin
 COPY --from=builder /build/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder /build/node_modules/@prisma ./node_modules/@prisma
@@ -707,12 +700,12 @@ Before every git push, verify:
 - [ ] Runner stage uses `WORKDIR /srv/app` (NOT /app)
 - [ ] Has verification step: `RUN ls -la .next/standalone/`
 - [ ] `ENV PATH="/srv/app/node_modules/.bin:$PATH"` set in runner
-- [ ] Selective file copying (NOT full standalone directory):
+- [ ] Selective file copying from standalone:
   - [ ] `COPY --from=builder /build/.next/standalone/server.js ./`
   - [ ] `COPY --from=builder /build/.next/standalone/package.json ./`
   - [ ] `COPY --from=builder /build/.next/standalone/.next ./.next`
-- [ ] Pre-creates `node_modules` directories BEFORE copying
-- [ ] Copies `node_modules/.bin`, `.prisma`, `@prisma`, `prisma`, `bcryptjs` from `/build/`
+  - [ ] `COPY --from=builder /build/.next/standalone/node_modules ./node_modules` (includes `next` module!)
+- [ ] Copies additional `node_modules/.bin`, `.prisma`, `@prisma`, `prisma`, `bcryptjs` from `/build/`
 - [ ] Creates uploads directories
 - [ ] Installs `wget`, `openssl`, and `bash` in runner stage
 - [ ] Entrypoint uses: `COPY nextjs_space/docker-entrypoint.sh ./`
@@ -750,6 +743,8 @@ Before every git push, verify:
 | COPY failed: file not found | Ensure `nextjs_space/` prefix on all COPY source paths |
 | 502 but container is running | App binding to `127.0.0.1` instead of `0.0.0.0` | Ensure `ENV HOSTNAME="0.0.0.0"` in Dockerfile |
 | `bash: executable file not found` (code 127) | Alpine Linux doesn't have bash by default | Dockerfile now installs bash; or use `sh` as fallback |
+| `Cannot find module 'next'` | Standalone node_modules not copied | Copy `/build/.next/standalone/node_modules` in Dockerfile |
+| `XX002` PostgreSQL index error | Database index corruption | Run `REINDEX INDEX index_name;` or `REINDEX TABLE table_name;` |
 
 ---
 

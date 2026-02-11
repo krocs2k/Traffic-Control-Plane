@@ -78,6 +78,9 @@ COPY --from=builder --chown=nextjs:nodejs /build/.next/standalone/package.json .
 # Copy .next build output
 COPY --from=builder --chown=nextjs:nodejs /build/.next/standalone/.next ./.next
 
+# Copy node_modules from standalone output (includes 'next' and runtime deps)
+COPY --from=builder --chown=nextjs:nodejs /build/.next/standalone/node_modules ./node_modules
+
 # Copy static assets
 COPY --from=builder --chown=nextjs:nodejs /build/public ./public
 COPY --from=builder --chown=nextjs:nodejs /build/.next/static ./.next/static
@@ -88,14 +91,7 @@ COPY --from=builder --chown=nextjs:nodejs /build/prisma ./prisma
 # Copy compiled seed script
 COPY --from=builder --chown=nextjs:nodejs /build/scripts/compiled ./scripts
 
-# Pre-create node_modules structure to avoid symlink conflicts
-RUN mkdir -p ./node_modules/.bin \
-             ./node_modules/.prisma \
-             ./node_modules/@prisma \
-             ./node_modules/prisma \
-             ./node_modules/bcryptjs
-
-# Copy required node_modules from builder
+# Copy additional node_modules needed for Prisma CLI and seeding (not in standalone)
 COPY --from=builder /build/node_modules/.bin ./node_modules/.bin
 COPY --from=builder /build/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder /build/node_modules/@prisma ./node_modules/@prisma
