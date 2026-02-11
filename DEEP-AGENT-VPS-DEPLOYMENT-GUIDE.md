@@ -292,11 +292,11 @@ COPY --from=builder --chown=nextjs:nodejs /build/.next/standalone/package.json .
 # Copy .next build output
 COPY --from=builder --chown=nextjs:nodejs /build/.next/standalone/.next ./.next
 
-# Copy node_modules from standalone output (includes 'next' and runtime deps)
-COPY --from=builder --chown=nextjs:nodejs /build/.next/standalone/node_modules ./node_modules
+# Copy full node_modules from builder (includes 'next' and all dependencies)
+COPY --from=builder --chown=nextjs:nodejs /build/node_modules ./node_modules
 
-# Verify 'next' module was copied
-RUN ls -la ./node_modules/next/ && echo "✓ 'next' module found in standalone node_modules"
+# Verify 'next' module exists
+RUN ls -la ./node_modules/next/ && echo "✓ 'next' module found"
 
 # Copy static assets
 COPY --from=builder --chown=nextjs:nodejs /build/public ./public
@@ -307,16 +307,6 @@ COPY --from=builder --chown=nextjs:nodejs /build/prisma ./prisma
 
 # Copy compiled seed script
 COPY --from=builder --chown=nextjs:nodejs /build/scripts/compiled ./scripts
-
-# Copy additional node_modules needed for Prisma CLI and seeding (merges with standalone)
-COPY --from=builder /build/node_modules/.prisma ./node_modules/.prisma
-COPY --from=builder /build/node_modules/@prisma ./node_modules/@prisma
-COPY --from=builder /build/node_modules/prisma ./node_modules/prisma
-COPY --from=builder /build/node_modules/bcryptjs ./node_modules/bcryptjs
-COPY --from=builder /build/node_modules/.bin ./node_modules/.bin
-
-# Verify 'next' module still exists after merging additional modules
-RUN ls -la ./node_modules/next/ && echo "✓ 'next' module still present after merge"
 
 # Copy entrypoint script (note: nextjs_space/ prefix)
 COPY nextjs_space/docker-entrypoint.sh ./
@@ -710,10 +700,8 @@ Before every git push, verify:
   - [ ] `COPY --from=builder /build/.next/standalone/server.js ./`
   - [ ] `COPY --from=builder /build/.next/standalone/package.json ./`
   - [ ] `COPY --from=builder /build/.next/standalone/.next ./.next`
-  - [ ] `COPY --from=builder /build/.next/standalone/node_modules ./node_modules` (includes `next` module!)
-- [ ] Verification step after copying standalone node_modules: `RUN ls -la ./node_modules/next/`
-- [ ] Copies additional `.prisma`, `@prisma`, `prisma`, `bcryptjs`, `.bin` from `/build/` (in that order)
-- [ ] Second verification step after merge: `RUN ls -la ./node_modules/next/`
+- [ ] Copy FULL node_modules from builder: `COPY --from=builder /build/node_modules ./node_modules`
+- [ ] Verification step: `RUN ls -la ./node_modules/next/`
 - [ ] Creates uploads directories
 - [ ] Installs `wget`, `openssl`, and `bash` in runner stage
 - [ ] Entrypoint uses: `COPY nextjs_space/docker-entrypoint.sh ./`
@@ -751,7 +739,7 @@ Before every git push, verify:
 | COPY failed: file not found | Ensure `nextjs_space/` prefix on all COPY source paths |
 | 502 but container is running | App binding to `127.0.0.1` instead of `0.0.0.0` | Ensure `ENV HOSTNAME="0.0.0.0"` in Dockerfile |
 | `bash: executable file not found` (code 127) | Alpine Linux doesn't have bash by default | Dockerfile now installs bash; or use `sh` as fallback |
-| `Cannot find module 'next'` | Standalone node_modules not copied | Copy `/build/.next/standalone/node_modules` in Dockerfile |
+| `Cannot find module 'next'` | Standalone node_modules incomplete | Copy full `/build/node_modules` from builder stage |
 | `XX002` PostgreSQL index error | Database index corruption | Run `REINDEX INDEX index_name;` or `REINDEX TABLE table_name;` |
 
 ---
