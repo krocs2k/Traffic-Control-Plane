@@ -24,6 +24,7 @@ This guide documents all modifications needed to deploy the Traffic Control Plan
 16. [Troubleshooting 502 Errors](#16-troubleshooting-502-errors)
 17. [Coolify-Specific Deployment](#17-coolify-specific-deployment)
 18. [Verifying Successful Deployment](#18-verifying-successful-deployment)
+19. [Application Features & Architecture](#19-application-features--architecture)
 
 ---
 
@@ -932,6 +933,176 @@ Database schema synchronized!
 Checking database state...
 Running seed script...
 Starting Next.js server...
+```
+
+---
+
+## 19. Application Features & Architecture
+
+This section documents the key features implemented in the Traffic Control Plane application.
+
+### Authentication System
+
+#### Standard Login
+- Email/password authentication via NextAuth.js
+- Session-based authentication with JWT tokens
+- Password hashing using bcryptjs
+
+#### Multi-Factor Authentication (MFA)
+The application supports TOTP-based MFA with backup codes.
+
+**MFA Flow:**
+1. **Setup** (`/api/auth/mfa/setup`): Generates MFA secret, QR code URL, and 10 backup codes
+2. **Verify** (`/api/auth/mfa/verify`): Verifies TOTP token and enables MFA
+3. **Login with MFA**: If MFA enabled, login requires 6-digit TOTP or 8-character backup code
+4. **Disable** (`/api/auth/mfa/disable`): Requires MFA token or password to disable
+5. **Regenerate Backup Codes** (`/api/auth/mfa/backup-codes`): Requires MFA token verification
+
+**Key Files:**
+| File | Purpose |
+|------|---------|
+| `lib/mfa.ts` | MFA utilities (secret generation, TOTP verification, backup codes) |
+| `lib/auth-options.ts` | NextAuth configuration with MFA integration |
+| `app/api/auth/mfa/*` | MFA API endpoints |
+| `app/(auth)/login/page.tsx` | Login page with MFA step |
+| `app/(dashboard)/profile/page.tsx` | MFA setup/management UI |
+
+**Dependencies:**
+- `otplib` - TOTP generation and verification
+- `qrcode` - QR code generation for authenticator apps
+
+#### Password Reset with MFA
+- `GET /api/auth/reset-password?token=X` - Validates token and returns `mfaRequired` status
+- `POST /api/auth/reset-password` - Accepts token, password, and optional mfaToken
+
+### Traffic Management Features
+
+#### Routing Policies
+- Priority-based routing rules with conditions and actions
+- AI Assistant for generating routing policy JSON via natural language
+- Manual JSON entry option
+
+**AI Assistant Integration:**
+- Endpoint: `/api/routing-policies/ai-assist`
+- Configurable LLM via environment variables:
+  ```env
+  LLM_API_BASE_URL='https://api.openai.com/v1'
+  LLM_API_KEY='your-key'
+  LLM_MODEL='gpt-4o-mini'
+  ```
+
+#### Backend Clusters
+- Cluster management with health status tracking
+- Cluster-level metrics and monitoring
+
+#### Read Replicas
+- Lag-aware replica selection algorithm
+- Status tracking: SYNCED, LAGGING, CATCHING_UP, OFFLINE
+- Manual and automatic replica selection
+
+#### Load Balancing
+- Multiple algorithm support (round-robin, least-connections, weighted, etc.)
+- Configuration management per cluster
+
+### Canary/A/B Testing (Experiments)
+
+**Experiment Lifecycle:**
+1. Create experiment with variants and traffic allocation
+2. Start experiment (status: RUNNING)
+3. Collect metrics per variant
+4. Complete or abort experiment
+
+**API Endpoints:**
+| Endpoint | Methods | Purpose |
+|----------|---------|---------|
+| `/api/experiments` | GET, POST | List/create experiments |
+| `/api/experiments/[id]` | GET, PATCH, DELETE | Manage single experiment |
+| `/api/experiments/[id]/metrics` | GET | Get experiment metrics |
+
+### Alerting System
+
+- Alert rules with configurable thresholds
+- Alert channels (email, webhook, etc.)
+- Alert states: triggered, acknowledged, resolved, silenced
+
+### Audit Logging
+
+All significant actions are logged to the `AuditLog` table:
+
+**Audit Action Categories:**
+- User actions: login, logout, password changes
+- MFA actions: setup, enable, disable, backup code regeneration
+- Experiment actions: created, updated, deleted
+- Load balancer actions: config created/updated/deleted
+- Alert actions: rule changes, acknowledgments, resolutions
+
+**Key File:** `lib/audit.ts` - Defines `AuditAction` types and `createAuditLog()` function
+
+### API Architecture
+
+#### Authentication Pattern
+All protected API routes follow this pattern:
+```typescript
+import { getServerSession } from 'next-auth';
+import { authOptions } from '@/lib/auth-options';
+
+export async function GET(request: NextRequest) {
+  const session = await getServerSession(authOptions);
+  if (!session?.user) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+  // ... route logic
+}
+```
+
+#### BigInt Serialization
+Some database fields (e.g., `totalRequests`, `totalErrors` in metrics) are BigInt. Convert to Number before JSON serialization:
+```typescript
+const serializedSnapshot = {
+  ...latestSnapshot,
+  totalRequests: Number(latestSnapshot.totalRequests),
+  totalErrors: Number(latestSnapshot.totalErrors),
+};
+```
+
+### Database Schema Notes
+
+**Prisma Configuration:**
+```prisma
+generator client {
+  provider = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x", "linux-musl-arm64-openssl-3.0.x"]
+  // NO output line - system auto-adds this, must be removed before push
+}
+```
+
+**Key Models:**
+- `User` - With MFA fields: `mfaSecret`, `mfaEnabled`, `mfaBackupCodes`, `mfaVerifiedAt`
+- `Experiment` - Canary/A/B test definitions
+- `ExperimentVariant` - Traffic variants within experiments
+- `RoutingPolicy` - Traffic routing rules
+- `ReadReplica` - Database replica configurations
+- `AlertRule`, `AlertChannel`, `Alert` - Alerting system
+- `AuditLog` - Action audit trail
+
+### Environment Variables Summary
+
+```env
+# Database
+DATABASE_URL='postgresql://user:password@host:5432/db'
+
+# Authentication
+NEXTAUTH_SECRET='generate-with-openssl-rand-base64-32'
+NEXTAUTH_URL='https://your-domain.com'
+
+# LLM API (for AI routing assistant)
+LLM_API_BASE_URL='https://api.openai.com/v1'
+LLM_API_KEY='sk-your-key'
+LLM_MODEL='gpt-4o-mini'
+
+# File Storage
+UPLOAD_DIR='./uploads'
+MAX_FILE_SIZE=52428800
 ```
 
 ---
