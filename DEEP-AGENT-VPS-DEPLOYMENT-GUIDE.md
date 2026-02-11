@@ -180,24 +180,26 @@ items.forEach((item: typeof items[number]) => { ... })
 
 ### Key Architecture Changes
 
-The Dockerfile has been completely restructured to avoid Docker layer caching conflicts:
+The Dockerfile has been completely restructured to avoid module resolution issues:
 
 | Stage | Working Directory | Purpose |
 |----|----|----|----|
 | deps | `/build` | Install dependencies |
 | builder | `/build` | Build the Next.js app |
-| runner | `/srv/app` | Fresh path, no cached layers |
+| runner | `/srv/app` | Fresh path, runs `next start` |
 
 ### Why This Matters
 
-The original approach copied the entire `standalone` directory which included a problematic `node_modules` symlink. This caused overlay2 filesystem conflicts in Docker. The new approach:
+We originally attempted to use Next.js's `output: 'standalone'` mode but encountered persistent `Cannot find module 'next'` errors. The standalone `server.js` has hardcoded module resolution paths that don't work reliably when copying between Docker stages. The new approach:
 
 1. **Uses separate working directories** - Builder uses `/build`, runner uses `/srv/app`
-2. **Selective file copying** - Only copies specific needed files, not the entire standalone directory
-3. **Pre-creates node_modules** - Creates directory structure BEFORE copying to avoid symlink issues
-4. **Forces standalone output** - Uses `sed` to ensure standalone mode is enabled
+2. **Full node_modules copy** - Copies the complete `node_modules` directory (not traced deps)
+3. **Uses `next start`** - Standard Next.js production server instead of standalone's `node server.js`
+4. **No standalone output** - `next.config.js` does NOT include `output: 'standalone'`
 
 ### Complete Dockerfile Template
+
+> ⚠️ **UPDATE:** We no longer use `output: 'standalone'` due to persistent module resolution issues. Instead, we use `next start` with the full `node_modules` directory. This results in a larger image (~500MB vs ~150MB) but is much more reliable.
 
 ```dockerfile
 FROM node:20-alpine AS base
@@ -234,13 +236,16 @@ RUN npx tsc scripts/seed.ts --outDir scripts/compiled --esModuleInterop \
     --module commonjs --target es2020 --skipLibCheck --types node \
     || echo "Using pre-compiled seed.js"
 
-# Create a clean next.config.js for Docker (removes problematic experimental settings)
+# Create a clean next.config.js for Docker (NO standalone - use next start instead)
 RUN cat > next.config.js << 'NEXTCONFIG'
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  output: 'standalone',
-  eslint: { ignoreDuringBuilds: true },
-  typescript: { ignoreBuildErrors: false },
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
+  typescript: {
+    ignoreBuildErrors: false,
+  },
   images: { unoptimized: true },
 };
 module.exports = nextConfig;
@@ -253,8 +258,8 @@ RUN echo "=== next.config.js ===" && cat next.config.js
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN yarn build
 
-# Verify standalone output exists
-RUN ls -la .next/standalone/ && ls -la .next/standalone/.next/
+# Verify build output exists
+RUN ls -la .next/ && echo "✓ Build completed"
 
 # ====
 # Stage 3: Runner (Fresh path - /srv/app)
@@ -280,33 +285,23 @@ RUN mkdir -p ./uploads/public ./uploads/private && \
     chown -R nextjs:nodejs ./uploads
 
 # ====
-# CRITICAL: Copy Entire Standalone Build + Full node_modules
+# Copy full app with node_modules (no standalone)
 # ====
-# The standalone server.js expects a specific directory structure.
-# Copy the ENTIRE standalone folder to preserve Next.js's expected paths,
-# then overlay full node_modules to ensure all dependencies are available.
+# We use `next start` instead of standalone's `node server.js`
+# This is more reliable but results in a larger image
 
-# Copy the ENTIRE standalone build (preserves Next.js's expected structure)
-COPY --from=builder --chown=nextjs:nodejs /build/.next/standalone/ ./
-
-# Verify standalone structure
-RUN echo "=== Standalone structure ===" && ls -la ./ && ls -la ./.next/
-
-# Copy full node_modules from builder to ensure all dependencies are available
-# This overwrites the traced node_modules with complete dependencies
+COPY --from=builder --chown=nextjs:nodejs /build/package.json ./
+COPY --from=builder --chown=nextjs:nodejs /build/next.config.js ./
 COPY --from=builder --chown=nextjs:nodejs /build/node_modules ./node_modules
-
-# Verify 'next' module exists and has the server entry point
-RUN ls -la ./node_modules/next/ && \
-    ls -la ./node_modules/next/dist/server/ && \
-    echo "✓ 'next' module found with server files"
-
-# Copy static assets
+COPY --from=builder --chown=nextjs:nodejs /build/.next ./.next
 COPY --from=builder --chown=nextjs:nodejs /build/public ./public
-COPY --from=builder --chown=nextjs:nodejs /build/.next/static ./.next/static
-
-# Copy Prisma schema
 COPY --from=builder --chown=nextjs:nodejs /build/prisma ./prisma
+
+# Verify structure
+RUN echo "=== Final structure ===" && ls -la ./ && \
+    echo "=== .next contents ===" && ls -la ./.next/ && \
+    echo "=== Verifying next module ===" && ls -la ./node_modules/next/ && \
+    echo "✓ All files copied"
 
 # Copy compiled seed script
 COPY --from=builder --chown=nextjs:nodejs /build/scripts/compiled ./scripts
@@ -331,33 +326,34 @@ ENTRYPOINT ["./docker-entrypoint.sh"]
 | Issue | Solution |
 |----|----|
 | overlay2 symlink conflict | Use `/srv/app` as fresh runner path |
-| `Cannot find module 'next'` | Copy ENTIRE standalone folder, then overlay full node_modules from builder |
-| Standalone output not generated | Dockerfile creates clean `next.config.js` with `output: 'standalone'` |
-| Missing Prisma CLI | Pre-create dirs + copy specific modules |
+| `Cannot find module 'next'` | **Don't use standalone** - use `next start` with full node_modules |
+| Module resolution issues | Copy full node_modules from builder, use `npx next start` |
+| Missing Prisma CLI | Full node_modules includes all CLI tools |
 | tsx silent failures | Pre-compile seed.ts in builder stage |
 
 ---
 
-## 6. Next.js Standalone Output
+## 6. Next.js Deployment Strategy
 
-**STATUS: ✅ DOCKERFILE CREATES CLEAN CONFIG**
+**STATUS: ✅ USING `next start` (NOT STANDALONE)**
 
-### The Problem
+### Why We Don't Use Standalone
 
-1. Using `output: process.env.NEXT_OUTPUT_MODE` with environment variables is unreliable
-2. The `sed` workaround proved problematic across different environments
-3. The `experimental.outputFileTracingRoot` setting (pointing to parent directory) can break standalone output in Docker
+The `output: 'standalone'` option in Next.js creates a minimal deployment bundle with traced dependencies. However, we encountered persistent `Cannot find module 'next'` errors due to:
 
-### The Solution
+1. **Module resolution conflicts** - The standalone `server.js` has hardcoded module paths that don't work when copying between Docker stages
+2. **Symlink issues** - Docker's overlay2 filesystem doesn't handle symlinks in node_modules well
+3. **Incomplete traced dependencies** - Next.js's dependency tracing sometimes misses required modules
 
-**The Dockerfile creates a clean `next.config.js` at build time:**
+### The Solution: Use `next start` with Full node_modules
+
+Instead of standalone, we use the standard `next start` command with the complete `node_modules` directory:
 
 ```dockerfile
-# Create a clean next.config.js for Docker (removes problematic experimental settings)
+# Create a clean next.config.js for Docker (NO standalone)
 RUN cat > next.config.js << 'NEXTCONFIG'
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  output: 'standalone',
   eslint: {
     ignoreDuringBuilds: true,
   },
@@ -368,23 +364,23 @@ const nextConfig = {
 };
 module.exports = nextConfig;
 NEXTCONFIG
-
-# Verify next.config.js
-RUN echo "=== next.config.js ===" && cat next.config.js
-
-# Build the application
-ENV NEXT_TELEMETRY_DISABLED=1
-RUN yarn build
-
-# Verify standalone output exists
-RUN ls -la .next/standalone/ && ls -la .next/standalone/.next/
 ```
 
-This approach:
-- Removes problematic `experimental.outputFileTracingRoot` setting
-- Ensures `output: 'standalone'` is always set correctly
-- Works regardless of what's in the source next.config.js
-- Provides verification that the config is correct before building
+**Entrypoint uses:**
+```bash
+exec npx next start -p 3000 -H 0.0.0.0
+```
+
+### Trade-offs
+
+| Aspect | Standalone | next start (Current) |
+|--------|-----------|---------------------|
+| Image Size | ~150MB | ~500MB |
+| Reliability | ❌ Module resolution issues | ✅ Works reliably |
+| Complexity | High (traced deps) | Low (standard deployment) |
+| Startup Time | Faster | Slightly slower |
+
+**We chose reliability over image size.** The larger image is acceptable for a self-hosted VPS deployment.
 
 ---
 
@@ -572,8 +568,10 @@ else
 fi
 
 echo "Starting Next.js server..."
-exec node server.js
+exec npx next start -p 3000 -H 0.0.0.0
 ```
+
+> ⚠️ **Note:** We use `npx next start` instead of `node server.js` because we're not using standalone output. This requires the full `node_modules` directory to be present.
 
 ---
 
@@ -690,21 +688,24 @@ Before every git push, verify:
 - [ ] `.dockerignore` is at PROJECT ROOT (not in nextjs_space/)
 
 ### Next.js Config (handled by Dockerfile)
-- [ ] Dockerfile creates clean `next.config.js` with `output: 'standalone'`
+- [ ] Dockerfile creates clean `next.config.js` **WITHOUT** `output: 'standalone'`
 - [ ] No `experimental.outputFileTracingRoot` in Docker build
 
-### Dockerfile (Restructured Build)
+### Dockerfile (Using `next start`)
 - [ ] All `COPY` commands use `nextjs_space/` prefix for source files
 - [ ] Builder stage uses `WORKDIR /build`
 - [ ] Runner stage uses `WORKDIR /srv/app` (NOT /app)
-- [ ] Has verification step: `RUN ls -la .next/standalone/`
+- [ ] Has verification step: `RUN ls -la .next/`
 - [ ] `ENV PATH="/srv/app/node_modules/.bin:$PATH"` set in runner
-- [ ] Copy ENTIRE standalone folder: `COPY --from=builder /build/.next/standalone/ ./`
-- [ ] Overlay FULL node_modules from builder: `COPY --from=builder /build/node_modules ./node_modules`
-- [ ] Verification step: `RUN ls -la ./node_modules/next/ && ls -la ./node_modules/next/dist/server/`
+- [ ] Copy full node_modules: `COPY --from=builder /build/node_modules ./node_modules`
+- [ ] Copy .next build: `COPY --from=builder /build/.next ./.next`
+- [ ] Verification step: `RUN ls -la ./node_modules/next/`
 - [ ] Creates uploads directories
 - [ ] Installs `wget`, `openssl`, and `bash` in runner stage
 - [ ] Entrypoint uses: `COPY nextjs_space/docker-entrypoint.sh ./`
+
+### Entrypoint
+- [ ] Uses `npx next start -p 3000 -H 0.0.0.0` (NOT `node server.js`)
 
 ### Seeding
 - [ ] Pre-compiled `scripts/compiled/seed.js` exists and is committed
@@ -723,10 +724,9 @@ Before every git push, verify:
 | Error | Fix |
 |-------|-----|
 | **overlay2 filesystem conflict** | Use `/srv/app` as runner WORKDIR, not `/app` |
-| **node_modules symlink issues** | Selective file copying instead of full standalone directory |
-| **standalone output not found** | Dockerfile must create clean next.config.js with `output: 'standalone'` |
-| `yarn build` succeeds but no standalone | Remove `experimental.outputFileTracingRoot` - it breaks standalone in Docker |
-| `sh: prisma: not found` | Set `ENV PATH="/srv/app/node_modules/.bin:$PATH"` and copy `node_modules/.bin` |
+| **`Cannot find module 'next'`** | **Don't use standalone** - use `next start` with full node_modules instead |
+| **node_modules symlink issues** | Copy full node_modules from builder (not traced deps from standalone) |
+| `sh: prisma: not found` | Set `ENV PATH="/srv/app/node_modules/.bin:$PATH"` - full node_modules includes CLI |
 | `Cannot find module 'get-tsconfig'` | Don't use tsx at runtime. Pre-compile seed.ts to JS |
 | `Cannot find type definition file for 'minimatch'` | Add `--types node` flag to tsc command |
 | 401 Unauthorized on login | Ensure seed.ts upsert includes password in update clause |
@@ -925,7 +925,14 @@ Database schema synchronized!
 Checking database state...
 Running seed script...
 Starting Next.js server...
+  ▲ Next.js 14.x.x
+  - Local:        http://0.0.0.0:3000
+  - Network:      http://0.0.0.0:3000
+
+ ✓ Ready in Xs
 ```
+
+> **Note:** The "Ready" message confirms the app is running with `next start`.
 
 ---
 
