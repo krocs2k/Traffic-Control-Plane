@@ -48,23 +48,28 @@ RUN adduser --system --uid 1001 nextjs
 
 COPY --from=builder /app/public ./public
 
-# Set the correct permission for prerender cache
-RUN mkdir .next
-RUN chown nextjs:nodejs .next
-
 # Automatically leverage output traces to reduce image size
+# Copy standalone output first
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+
+# Fix any conflicting .next file/symlink from standalone and set up static files
+RUN rm -rf ./.next 2>/dev/null || true && mkdir -p ./.next && chown nextjs:nodejs ./.next
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+
+# Remove any conflicting node_modules file/symlink and recreate as directory
+# This fixes "cannot replace to directory with file" Docker errors
+RUN rm -rf ./node_modules && mkdir -p ./node_modules/.bin ./node_modules/@prisma ./node_modules/.prisma && \
+    chown -R nextjs:nodejs ./node_modules
 
 # Copy Prisma schema
 COPY --from=builder /app/prisma ./prisma
 
-# Copy additional node_modules (pre-staged to avoid conflicts)
-COPY --from=builder /app/extra_modules/.prisma ./node_modules/.prisma
-COPY --from=builder /app/extra_modules/@prisma ./node_modules/@prisma
-COPY --from=builder /app/extra_modules/prisma ./node_modules/prisma
-COPY --from=builder /app/extra_modules/bcryptjs ./node_modules/bcryptjs
-COPY --from=builder /app/extra_modules/.bin ./node_modules/.bin
+# Copy additional node_modules contents (into clean directory structure)
+COPY --from=builder --chown=nextjs:nodejs /app/extra_modules/.prisma/ ./node_modules/.prisma/
+COPY --from=builder --chown=nextjs:nodejs /app/extra_modules/@prisma/ ./node_modules/@prisma/
+COPY --from=builder --chown=nextjs:nodejs /app/extra_modules/prisma/ ./node_modules/prisma/
+COPY --from=builder --chown=nextjs:nodejs /app/extra_modules/bcryptjs/ ./node_modules/bcryptjs/
+COPY --from=builder --chown=nextjs:nodejs /app/extra_modules/.bin/ ./node_modules/.bin/
 
 # Add node_modules/.bin to PATH for prisma CLI access
 ENV PATH="/app/node_modules/.bin:$PATH"
