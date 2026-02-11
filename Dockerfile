@@ -25,7 +25,9 @@ RUN npx tsc scripts/seed.ts --outDir scripts/compiled --esModuleInterop \
     || echo "Using pre-compiled seed.js"
 
 # Force standalone output in next.config.js (env var approach can be unreliable)
-RUN sed -i "s/output: process.env.NEXT_OUTPUT_MODE/output: 'standalone'/" next.config.js
+RUN sed -i "s/output: process.env.NEXT_OUTPUT_MODE,/output: 'standalone',/" next.config.js && \
+    grep -q "output: 'standalone'" next.config.js && echo "Standalone output configured" || \
+    (echo "ERROR: Failed to set standalone output" && exit 1)
 
 # Build the application
 ENV NEXT_TELEMETRY_DISABLED=1
