@@ -48,18 +48,21 @@ RUN adduser --system --uid 1001 nextjs
 
 COPY --from=builder /app/public ./public
 
-# Automatically leverage output traces to reduce image size
-# Copy standalone output first
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+# Copy standalone output to temp location first, then selectively move contents
+# This avoids "cannot replace directory with file" errors from node_modules conflicts
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone /tmp/standalone
 
-# Fix any conflicting .next file/symlink from standalone and set up static files
-RUN rm -rf ./.next 2>/dev/null || true && mkdir -p ./.next && chown nextjs:nodejs ./.next
+# Create proper directory structure and copy standalone contents EXCLUDING node_modules and .next
+# Using find + cp to skip problematic symlinks/files that cause "cannot replace directory with file" errors
+RUN mkdir -p ./.next ./node_modules/.bin ./node_modules/@prisma ./node_modules/.prisma && \
+    chown -R nextjs:nodejs ./.next ./node_modules && \
+    cd /tmp/standalone && \
+    find . -maxdepth 1 ! -name node_modules ! -name .next ! -name . -exec cp -r {} /app/ \; && \
+    if [ -d .next ]; then cp -r .next/. /app/.next/ 2>/dev/null || true; fi && \
+    rm -rf /tmp/standalone
+
+# Copy static files
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
-
-# Remove any conflicting node_modules file/symlink and recreate as directory
-# This fixes "cannot replace to directory with file" Docker errors
-RUN rm -rf ./node_modules && mkdir -p ./node_modules/.bin ./node_modules/@prisma ./node_modules/.prisma && \
-    chown -R nextjs:nodejs ./node_modules
 
 # Copy Prisma schema
 COPY --from=builder /app/prisma ./prisma
