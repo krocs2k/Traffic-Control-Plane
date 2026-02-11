@@ -24,11 +24,10 @@ RUN npx tsc scripts/seed.ts --outDir scripts/compiled --esModuleInterop \
     --module commonjs --target es2020 --skipLibCheck --types node \
     || echo "Using pre-compiled seed.js"
 
-# Create a clean next.config.js for Docker (removes problematic experimental settings)
+# Create a clean next.config.js for Docker (NO standalone - use next start instead)
 RUN cat > next.config.js << 'NEXTCONFIG'
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  output: 'standalone',
   eslint: {
     ignoreDuringBuilds: true,
   },
@@ -47,8 +46,8 @@ RUN echo "=== next.config.js ===" && cat next.config.js
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN yarn build
 
-# Verify standalone output exists
-RUN ls -la .next/standalone/ && ls -la .next/standalone/.next/
+# Verify build output exists
+RUN ls -la .next/ && echo "✓ Build completed"
 
 # Production image - use /srv/app to avoid any cached layer conflicts
 FROM base AS runner
@@ -71,36 +70,19 @@ ENV PATH="/srv/app/node_modules/.bin:$PATH"
 RUN mkdir -p ./uploads/public ./uploads/private && \
     chown -R nextjs:nodejs ./uploads
 
-# Copy package.json and prisma schema for dependency installation
+# Copy everything from builder (full app with node_modules)
 COPY --from=builder --chown=nextjs:nodejs /build/package.json ./
+COPY --from=builder --chown=nextjs:nodejs /build/next.config.js ./
+COPY --from=builder --chown=nextjs:nodejs /build/node_modules ./node_modules
+COPY --from=builder --chown=nextjs:nodejs /build/.next ./.next
+COPY --from=builder --chown=nextjs:nodejs /build/public ./public
 COPY --from=builder --chown=nextjs:nodejs /build/prisma ./prisma
 
-# Install production dependencies fresh in runner stage
-# This ensures proper module resolution without copy/symlink issues
-RUN yarn install --production --frozen-lockfile || yarn install --production
-
-# Generate Prisma client in runner
-RUN npx prisma generate
-
-# Verify 'next' module exists after install
-RUN ls -la ./node_modules/next/ && echo "✓ 'next' module installed" && \
-    ls -la ./node_modules/.prisma/client/ && echo "✓ Prisma client generated"
-
-# Copy standalone server.js (overwrites the one from package.json if any)
-COPY --from=builder --chown=nextjs:nodejs /build/.next/standalone/server.js ./
-
-# Copy the .next build output from standalone
-COPY --from=builder --chown=nextjs:nodejs /build/.next/standalone/.next ./.next
-
-# Verify final structure
+# Verify structure
 RUN echo "=== Final structure ===" && ls -la ./ && \
     echo "=== .next contents ===" && ls -la ./.next/ && \
-    echo "=== node_modules/next ===" && ls -la ./node_modules/next/ && \
-    echo "=== Checking server.js requires ===" && head -20 server.js
-
-# Copy static assets
-COPY --from=builder --chown=nextjs:nodejs /build/public ./public
-COPY --from=builder --chown=nextjs:nodejs /build/.next/static ./.next/static
+    echo "=== Verifying next module ===" && ls -la ./node_modules/next/ && \
+    echo "✓ All files copied"
 
 # Copy compiled seed script
 COPY --from=builder --chown=nextjs:nodejs /build/scripts/compiled ./scripts
