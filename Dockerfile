@@ -52,7 +52,7 @@ RUN ls -la .next/standalone/ && ls -la .next/standalone/.next/
 
 # Production image - use /srv/app to avoid any cached layer conflicts
 FROM base AS runner
-RUN apk add --no-cache wget openssl
+RUN apk add --no-cache wget openssl bash
 
 WORKDIR /srv/app
 

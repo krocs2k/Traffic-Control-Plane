@@ -260,7 +260,7 @@ RUN ls -la .next/standalone/ && ls -la .next/standalone/.next/
 # Stage 3: Runner (Fresh path - /srv/app)
 # ====
 FROM base AS runner
-RUN apk add --no-cache wget openssl
+RUN apk add --no-cache wget openssl bash
 
 WORKDIR /srv/app
 
@@ -714,7 +714,7 @@ Before every git push, verify:
 - [ ] Pre-creates `node_modules` directories BEFORE copying
 - [ ] Copies `node_modules/.bin`, `.prisma`, `@prisma`, `prisma`, `bcryptjs` from `/build/`
 - [ ] Creates uploads directories
-- [ ] Installs `wget` and `openssl` in runner stage
+- [ ] Installs `wget`, `openssl`, and `bash` in runner stage
 - [ ] Entrypoint uses: `COPY nextjs_space/docker-entrypoint.sh ./`
 
 ### Seeding
@@ -749,7 +749,7 @@ Before every git push, verify:
 | Files not persisting after restart | Check `uploads-data` volume uses `/srv/app/uploads` |
 | COPY failed: file not found | Ensure `nextjs_space/` prefix on all COPY source paths |
 | 502 but container is running | App binding to `127.0.0.1` instead of `0.0.0.0` | Ensure `ENV HOSTNAME="0.0.0.0"` in Dockerfile |
-| `bash: executable file not found` (code 127) | Alpine Linux doesn't have bash | Use `docker exec -it <container> sh` instead of `bash` |
+| `bash: executable file not found` (code 127) | Alpine Linux doesn't have bash by default | Dockerfile now installs bash; or use `sh` as fallback |
 
 ---
 
@@ -825,7 +825,10 @@ DATABASE_URL='postgresql://user:password@your-db-host.com:5432/tcp'
 
 Enter the container and check manually:
 ```bash
-# IMPORTANT: Use 'sh' not 'bash' - Alpine Linux doesn't have bash installed
+# Bash is now installed in the container
+docker exec -it <container_name> bash
+
+# Or use sh as fallback
 docker exec -it <container_name> sh
 
 # Inside container:
@@ -833,9 +836,7 @@ ls -la /srv/app/
 node server.js
 ```
 
-> ⚠️ **Common Error:** `exec: "bash": executable file not found in $PATH` (exit code 127)
-> 
-> **Fix:** Alpine Linux uses `sh` (BusyBox shell), not `bash`. Always use `docker exec -it <container> sh`
+> ℹ️ **Note:** The Dockerfile now installs `bash` in the runner stage (`apk add --no-cache wget openssl bash`). If you're using an older image without bash, use `sh` instead.
 
 ### Step 5: Coolify-Specific Checks
 
