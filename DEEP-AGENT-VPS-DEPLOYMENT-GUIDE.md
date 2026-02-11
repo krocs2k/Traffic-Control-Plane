@@ -280,23 +280,26 @@ RUN mkdir -p ./uploads/public ./uploads/private && \
     chown -R nextjs:nodejs ./uploads
 
 # ====
-# CRITICAL: Selective File Copying
+# CRITICAL: Copy Entire Standalone Build + Full node_modules
 # ====
-# Instead of copying entire standalone directory (which has symlink issues),
-# copy specific files individually:
+# The standalone server.js expects a specific directory structure.
+# Copy the ENTIRE standalone folder to preserve Next.js's expected paths,
+# then overlay full node_modules to ensure all dependencies are available.
 
-# Copy server files
-COPY --from=builder --chown=nextjs:nodejs /build/.next/standalone/server.js ./
-COPY --from=builder --chown=nextjs:nodejs /build/.next/standalone/package.json ./
+# Copy the ENTIRE standalone build (preserves Next.js's expected structure)
+COPY --from=builder --chown=nextjs:nodejs /build/.next/standalone/ ./
 
-# Copy .next build output
-COPY --from=builder --chown=nextjs:nodejs /build/.next/standalone/.next ./.next
+# Verify standalone structure
+RUN echo "=== Standalone structure ===" && ls -la ./ && ls -la ./.next/
 
-# Copy full node_modules from builder (includes 'next' and all dependencies)
+# Copy full node_modules from builder to ensure all dependencies are available
+# This overwrites the traced node_modules with complete dependencies
 COPY --from=builder --chown=nextjs:nodejs /build/node_modules ./node_modules
 
-# Verify 'next' module exists
-RUN ls -la ./node_modules/next/ && echo "✓ 'next' module found"
+# Verify 'next' module exists and has the server entry point
+RUN ls -la ./node_modules/next/ && \
+    ls -la ./node_modules/next/dist/server/ && \
+    echo "✓ 'next' module found with server files"
 
 # Copy static assets
 COPY --from=builder --chown=nextjs:nodejs /build/public ./public
@@ -328,8 +331,8 @@ ENTRYPOINT ["./docker-entrypoint.sh"]
 | Issue | Solution |
 |----|----|
 | overlay2 symlink conflict | Use `/srv/app` as fresh runner path |
-| Standalone node_modules symlink | Selective file copying, not full directory |
-| Standalone output not generated | Use `sed` to force `output: 'standalone'` |
+| `Cannot find module 'next'` | Copy ENTIRE standalone folder, then overlay full node_modules from builder |
+| Standalone output not generated | Dockerfile creates clean `next.config.js` with `output: 'standalone'` |
 | Missing Prisma CLI | Pre-create dirs + copy specific modules |
 | tsx silent failures | Pre-compile seed.ts in builder stage |
 
@@ -696,12 +699,9 @@ Before every git push, verify:
 - [ ] Runner stage uses `WORKDIR /srv/app` (NOT /app)
 - [ ] Has verification step: `RUN ls -la .next/standalone/`
 - [ ] `ENV PATH="/srv/app/node_modules/.bin:$PATH"` set in runner
-- [ ] Selective file copying from standalone:
-  - [ ] `COPY --from=builder /build/.next/standalone/server.js ./`
-  - [ ] `COPY --from=builder /build/.next/standalone/package.json ./`
-  - [ ] `COPY --from=builder /build/.next/standalone/.next ./.next`
-- [ ] Copy FULL node_modules from builder: `COPY --from=builder /build/node_modules ./node_modules`
-- [ ] Verification step: `RUN ls -la ./node_modules/next/`
+- [ ] Copy ENTIRE standalone folder: `COPY --from=builder /build/.next/standalone/ ./`
+- [ ] Overlay FULL node_modules from builder: `COPY --from=builder /build/node_modules ./node_modules`
+- [ ] Verification step: `RUN ls -la ./node_modules/next/ && ls -la ./node_modules/next/dist/server/`
 - [ ] Creates uploads directories
 - [ ] Installs `wget`, `openssl`, and `bash` in runner stage
 - [ ] Entrypoint uses: `COPY nextjs_space/docker-entrypoint.sh ./`
@@ -739,7 +739,7 @@ Before every git push, verify:
 | COPY failed: file not found | Ensure `nextjs_space/` prefix on all COPY source paths |
 | 502 but container is running | App binding to `127.0.0.1` instead of `0.0.0.0` | Ensure `ENV HOSTNAME="0.0.0.0"` in Dockerfile |
 | `bash: executable file not found` (code 127) | Alpine Linux doesn't have bash by default | Dockerfile now installs bash; or use `sh` as fallback |
-| `Cannot find module 'next'` | Standalone node_modules incomplete | Copy full `/build/node_modules` from builder stage |
+| `Cannot find module 'next'` | Standalone server.js expects specific directory structure | Copy ENTIRE `/build/.next/standalone/` folder first, THEN overlay full `/build/node_modules` from builder |
 | `XX002` PostgreSQL index error | Database index corruption | Run `REINDEX INDEX index_name;` or `REINDEX TABLE table_name;` |
 
 ---
