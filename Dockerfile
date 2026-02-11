@@ -71,18 +71,20 @@ ENV PATH="/srv/app/node_modules/.bin:$PATH"
 RUN mkdir -p ./uploads/public ./uploads/private && \
     chown -R nextjs:nodejs ./uploads
 
-# Copy server files
-COPY --from=builder --chown=nextjs:nodejs /build/.next/standalone/server.js ./
-COPY --from=builder --chown=nextjs:nodejs /build/.next/standalone/package.json ./
+# Copy the ENTIRE standalone build (preserves Next.js's expected structure)
+COPY --from=builder --chown=nextjs:nodejs /build/.next/standalone/ ./
 
-# Copy .next build output
-COPY --from=builder --chown=nextjs:nodejs /build/.next/standalone/.next ./.next
+# Verify standalone structure
+RUN echo "=== Standalone structure ===" && ls -la ./ && ls -la ./.next/
 
-# Copy full node_modules from builder (includes 'next' and all dependencies)
+# Copy full node_modules from builder to ensure all dependencies are available
+# This overwrites the traced node_modules with complete dependencies
 COPY --from=builder --chown=nextjs:nodejs /build/node_modules ./node_modules
 
-# Verify 'next' module exists
-RUN ls -la ./node_modules/next/ && echo "✓ 'next' module found"
+# Verify 'next' module exists and has the server entry point
+RUN ls -la ./node_modules/next/ && \
+    ls -la ./node_modules/next/dist/server/ && \
+    echo "✓ 'next' module found with server files"
 
 # Copy static assets
 COPY --from=builder --chown=nextjs:nodejs /build/public ./public
