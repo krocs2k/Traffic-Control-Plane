@@ -204,6 +204,7 @@ We originally attempted to use Next.js's `output: 'standalone'` mode but encount
 ```dockerfile
 FROM node:20-alpine AS base
 
+# Cache bust: 2026-02-11-v3 - CRITICAL: Remove server.js, use next start only
 # ====
 # Stage 1: Dependencies
 # ====
@@ -236,6 +237,9 @@ RUN npx tsc scripts/seed.ts --outDir scripts/compiled --esModuleInterop \
     --module commonjs --target es2020 --skipLibCheck --types node \
     || echo "Using pre-compiled seed.js"
 
+# Clean any previous build artifacts to prevent standalone remnants
+RUN rm -rf .next
+
 # Create a clean next.config.js for Docker (NO standalone - use next start instead)
 RUN cat > next.config.js << 'NEXTCONFIG'
 /** @type {import('next').NextConfig} */
@@ -251,15 +255,20 @@ const nextConfig = {
 module.exports = nextConfig;
 NEXTCONFIG
 
-# Verify next.config.js
-RUN echo "=== next.config.js ===" && cat next.config.js
+# Verify next.config.js has NO standalone
+RUN echo "=== next.config.js ===" && cat next.config.js && \
+    echo "=== Verifying no standalone in config ===" && \
+    ! grep -q "standalone" next.config.js && echo "✓ No standalone in config"
 
 # Build the application
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN yarn build
 
-# Verify build output exists
-RUN ls -la .next/ && echo "✓ Build completed"
+# Verify build output exists and NO standalone folder
+RUN ls -la .next/ && \
+    echo "=== Checking for standalone (should NOT exist) ===" && \
+    ! test -d .next/standalone && echo "✓ No standalone folder - correct!" || \
+    (echo "ERROR: standalone folder exists!" && rm -rf .next/standalone && echo "Removed it")
 
 # ====
 # Stage 3: Runner (Fresh path - /srv/app)
@@ -297,11 +306,17 @@ COPY --from=builder --chown=nextjs:nodejs /build/.next ./.next
 COPY --from=builder --chown=nextjs:nodejs /build/public ./public
 COPY --from=builder --chown=nextjs:nodejs /build/prisma ./prisma
 
-# Verify structure
+# CRITICAL: Remove any server.js if it exists (from cached standalone builds)
+RUN rm -f ./server.js && \
+    rm -rf ./.next/standalone
+
+# Verify structure - NO server.js should exist
 RUN echo "=== Final structure ===" && ls -la ./ && \
     echo "=== .next contents ===" && ls -la ./.next/ && \
     echo "=== Verifying next module ===" && ls -la ./node_modules/next/ && \
-    echo "✓ All files copied"
+    echo "=== Verifying NO server.js ===" && \
+    ! test -f ./server.js && echo "✓ No server.js - will use next start" || \
+    (echo "ERROR: server.js exists!" && exit 1)
 
 # Copy compiled seed script
 COPY --from=builder --chown=nextjs:nodejs /build/scripts/compiled ./scripts
@@ -707,6 +722,10 @@ Before every git push, verify:
 ### Entrypoint
 - [ ] Uses `npx next start -p 3000 -H 0.0.0.0` (NOT `node server.js`)
 
+### Docker Cache (Important After Major Changes)
+- [ ] If switching from standalone to `next start`, force a full rebuild (see Section 15.1)
+- [ ] Update cache bust comment in Dockerfile if needed: `# Cache bust: YYYY-MM-DD-vX`
+
 ### Seeding
 - [ ] Pre-compiled `scripts/compiled/seed.js` exists and is committed
 - [ ] Seed script upsert includes password in update clause
@@ -724,7 +743,7 @@ Before every git push, verify:
 | Error | Fix |
 |-------|-----|
 | **overlay2 filesystem conflict** | Use `/srv/app` as runner WORKDIR, not `/app` |
-| **`Cannot find module 'next'`** | **Don't use standalone** - use `next start` with full node_modules instead |
+| **`Cannot find module 'next'` with `/srv/app/server.js`** | **Docker cache issue** - see Section 15.1 below |
 | **node_modules symlink issues** | Copy full node_modules from builder (not traced deps from standalone) |
 | `sh: prisma: not found` | Set `ENV PATH="/srv/app/node_modules/.bin:$PATH"` - full node_modules includes CLI |
 | `Cannot find module 'get-tsconfig'` | Don't use tsx at runtime. Pre-compile seed.ts to JS |
@@ -739,8 +758,80 @@ Before every git push, verify:
 | COPY failed: file not found | Ensure `nextjs_space/` prefix on all COPY source paths |
 | 502 but container is running | App binding to `127.0.0.1` instead of `0.0.0.0` | Ensure `ENV HOSTNAME="0.0.0.0"` in Dockerfile |
 | `bash: executable file not found` (code 127) | Alpine Linux doesn't have bash by default | Dockerfile now installs bash; or use `sh` as fallback |
-| `Cannot find module 'next'` | Standalone server.js expects specific directory structure | Copy ENTIRE `/build/.next/standalone/` folder first, THEN overlay full `/build/node_modules` from builder |
 | `XX002` PostgreSQL index error | Database index corruption | Run `REINDEX INDEX index_name;` or `REINDEX TABLE table_name;` |
+
+### 15.1 Docker Cache Issues: `Cannot find module 'next'` with `server.js`
+
+**Symptom:** Container logs show:
+```
+Error: Cannot find module 'next'
+Require stack:
+- /srv/app/server.js
+```
+
+**Root Cause:** Docker/Coolify is using a **cached image** from a previous build that used `output: 'standalone'`. The cached runner stage still contains the old `server.js` file even though the source code has been updated.
+
+**Solution 1: Force Rebuild in Coolify**
+1. Go to your app in Coolify dashboard
+2. Click **Deployments** → **Rebuild** 
+3. Enable **"Force rebuild"** or **"No cache"** checkbox
+4. Click Deploy
+
+**Solution 2: Clear Docker Cache on VPS**
+```bash
+# SSH into your VPS
+ssh user@your-vps
+
+# Clear all Docker cache and images
+docker system prune -a --volumes -f
+docker builder prune -a -f
+
+# Then trigger a new deployment from Coolify
+```
+
+**Solution 3: Add Build Command Options**
+In Coolify's build settings, add to Docker build options:
+```
+--no-cache --pull
+```
+
+**Verification:** After rebuild, container logs should show:
+```
+Starting Next.js server...
+  ▲ Next.js 14.x.x
+  - Local:        http://0.0.0.0:3000
+ ✓ Ready in Xs
+```
+
+**NOT** `/srv/app/server.js` being executed.
+
+### 15.2 Dockerfile Safeguards Against Cached Standalone
+
+The current Dockerfile includes safeguards to prevent this issue:
+
+```dockerfile
+# In builder stage - clean any previous build artifacts
+RUN rm -rf .next
+
+# Verify no standalone in next.config.js
+RUN ! grep -q "standalone" next.config.js && echo "✓ No standalone in config"
+
+# Verify no standalone folder after build
+RUN ! test -d .next/standalone && echo "✓ No standalone folder"
+
+# In runner stage - forcefully remove any server.js
+RUN rm -f ./server.js && rm -rf ./.next/standalone
+
+# Fail build if server.js still exists
+RUN ! test -f ./server.js && echo "✓ No server.js - will use next start"
+```
+
+The Dockerfile also includes a **cache bust comment** that can be updated to force rebuilds:
+```dockerfile
+# Cache bust: 2026-02-11-v3 - CRITICAL: Remove server.js, use next start only
+```
+
+To force a rebuild, increment the version or change the date in this comment.
 
 ---
 
@@ -824,10 +915,17 @@ docker exec -it <container_name> sh
 
 # Inside container:
 ls -la /srv/app/
-node server.js
+
+# Verify NO server.js exists (we use next start, not standalone)
+test -f server.js && echo "ERROR: server.js exists - cached image!" || echo "✓ No server.js"
+
+# Manually test starting the app
+npx next start -p 3000 -H 0.0.0.0
 ```
 
 > ℹ️ **Note:** The Dockerfile now installs `bash` in the runner stage (`apk add --no-cache wget openssl bash`). If you're using an older image without bash, use `sh` instead.
+
+> ⚠️ **IMPORTANT:** If you see `server.js` in `/srv/app/`, you have a cached Docker image. Force a rebuild with `--no-cache` (see Section 15.1).
 
 ### Step 5: Coolify-Specific Checks
 
