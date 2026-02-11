@@ -295,6 +295,9 @@ COPY --from=builder --chown=nextjs:nodejs /build/.next/standalone/.next ./.next
 # Copy node_modules from standalone output (includes 'next' and runtime deps)
 COPY --from=builder --chown=nextjs:nodejs /build/.next/standalone/node_modules ./node_modules
 
+# Verify 'next' module was copied
+RUN ls -la ./node_modules/next/ && echo "✓ 'next' module found in standalone node_modules"
+
 # Copy static assets
 COPY --from=builder --chown=nextjs:nodejs /build/public ./public
 COPY --from=builder --chown=nextjs:nodejs /build/.next/static ./.next/static
@@ -305,12 +308,15 @@ COPY --from=builder --chown=nextjs:nodejs /build/prisma ./prisma
 # Copy compiled seed script
 COPY --from=builder --chown=nextjs:nodejs /build/scripts/compiled ./scripts
 
-# Copy additional node_modules needed for Prisma CLI and seeding (not in standalone)
-COPY --from=builder /build/node_modules/.bin ./node_modules/.bin
+# Copy additional node_modules needed for Prisma CLI and seeding (merges with standalone)
 COPY --from=builder /build/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder /build/node_modules/@prisma ./node_modules/@prisma
 COPY --from=builder /build/node_modules/prisma ./node_modules/prisma
 COPY --from=builder /build/node_modules/bcryptjs ./node_modules/bcryptjs
+COPY --from=builder /build/node_modules/.bin ./node_modules/.bin
+
+# Verify 'next' module still exists after merging additional modules
+RUN ls -la ./node_modules/next/ && echo "✓ 'next' module still present after merge"
 
 # Copy entrypoint script (note: nextjs_space/ prefix)
 COPY nextjs_space/docker-entrypoint.sh ./
@@ -705,7 +711,9 @@ Before every git push, verify:
   - [ ] `COPY --from=builder /build/.next/standalone/package.json ./`
   - [ ] `COPY --from=builder /build/.next/standalone/.next ./.next`
   - [ ] `COPY --from=builder /build/.next/standalone/node_modules ./node_modules` (includes `next` module!)
-- [ ] Copies additional `node_modules/.bin`, `.prisma`, `@prisma`, `prisma`, `bcryptjs` from `/build/`
+- [ ] Verification step after copying standalone node_modules: `RUN ls -la ./node_modules/next/`
+- [ ] Copies additional `.prisma`, `@prisma`, `prisma`, `bcryptjs`, `.bin` from `/build/` (in that order)
+- [ ] Second verification step after merge: `RUN ls -la ./node_modules/next/`
 - [ ] Creates uploads directories
 - [ ] Installs `wget`, `openssl`, and `bash` in runner stage
 - [ ] Entrypoint uses: `COPY nextjs_space/docker-entrypoint.sh ./`
