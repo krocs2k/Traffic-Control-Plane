@@ -230,7 +230,22 @@ RUN npx tsc scripts/seed.ts --outDir scripts/compiled --esModuleInterop \
     --module commonjs --target es2020 --skipLibCheck --types node \
     || echo "Using pre-compiled seed.js"
 
-# Build the application (standalone output is hardcoded in next.config.js)
+# Create a clean next.config.js for Docker (removes problematic experimental settings)
+RUN cat > next.config.js << 'NEXTCONFIG'
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  output: 'standalone',
+  eslint: { ignoreDuringBuilds: true },
+  typescript: { ignoreBuildErrors: false },
+  images: { unoptimized: true },
+};
+module.exports = nextConfig;
+NEXTCONFIG
+
+# Verify next.config.js
+RUN echo "=== next.config.js ===" && cat next.config.js
+
+# Build the application
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN yarn build
 
@@ -329,29 +344,39 @@ ENTRYPOINT ["./docker-entrypoint.sh"]
 
 ## 6. Next.js Standalone Output
 
-**STATUS: ✅ HARDCODED**
+**STATUS: ✅ DOCKERFILE CREATES CLEAN CONFIG**
 
 ### The Problem
 
-Using `output: process.env.NEXT_OUTPUT_MODE` with environment variables is unreliable in Docker builds. The `sed` workaround also proved problematic across different environments.
+1. Using `output: process.env.NEXT_OUTPUT_MODE` with environment variables is unreliable
+2. The `sed` workaround proved problematic across different environments
+3. The `experimental.outputFileTracingRoot` setting (pointing to parent directory) can break standalone output in Docker
 
 ### The Solution
 
-**Hardcode `output: 'standalone'` directly in `next.config.js`:**
-
-```javascript
-// next.config.js
-const nextConfig = {
-  distDir: process.env.NEXT_DIST_DIR || '.next',
-  output: 'standalone',  // HARDCODED - do not use env var
-  // ... rest of config
-};
-```
-
-The Dockerfile then simply builds without any sed manipulation:
+**The Dockerfile creates a clean `next.config.js` at build time:**
 
 ```dockerfile
-# Build the application (standalone output is hardcoded in next.config.js)
+# Create a clean next.config.js for Docker (removes problematic experimental settings)
+RUN cat > next.config.js << 'NEXTCONFIG'
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  output: 'standalone',
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
+  typescript: {
+    ignoreBuildErrors: false,
+  },
+  images: { unoptimized: true },
+};
+module.exports = nextConfig;
+NEXTCONFIG
+
+# Verify next.config.js
+RUN echo "=== next.config.js ===" && cat next.config.js
+
+# Build the application
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN yarn build
 
@@ -359,7 +384,11 @@ RUN yarn build
 RUN ls -la .next/standalone/ && ls -la .next/standalone/.next/
 ```
 
-> ⚠️ **WARNING:** Do NOT change `output: 'standalone'` back to an environment variable. This is the most reliable approach for Docker deployments.
+This approach:
+- Removes problematic `experimental.outputFileTracingRoot` setting
+- Ensures `output: 'standalone'` is always set correctly
+- Works regardless of what's in the source next.config.js
+- Provides verification that the config is correct before building
 
 ---
 
@@ -664,8 +693,9 @@ Before every git push, verify:
 - [ ] `Dockerfile` is at PROJECT ROOT (not in nextjs_space/)
 - [ ] `.dockerignore` is at PROJECT ROOT (not in nextjs_space/)
 
-### Next.js Config
-- [ ] `next.config.js` has `output: 'standalone'` hardcoded (NOT env var)
+### Next.js Config (handled by Dockerfile)
+- [ ] Dockerfile creates clean `next.config.js` with `output: 'standalone'`
+- [ ] No `experimental.outputFileTracingRoot` in Docker build
 
 ### Dockerfile (Restructured Build)
 - [ ] All `COPY` commands use `nextjs_space/` prefix for source files
@@ -701,8 +731,8 @@ Before every git push, verify:
 |-------|-----|
 | **overlay2 filesystem conflict** | Use `/srv/app` as runner WORKDIR, not `/app` |
 | **node_modules symlink issues** | Selective file copying instead of full standalone directory |
-| **standalone output not found** | Ensure `output: 'standalone'` is hardcoded in next.config.js (not env var) |
-| `yarn build` succeeds but no standalone | Check next.config.js has `output: 'standalone'` (not `process.env.NEXT_OUTPUT_MODE`) |
+| **standalone output not found** | Dockerfile must create clean next.config.js with `output: 'standalone'` |
+| `yarn build` succeeds but no standalone | Remove `experimental.outputFileTracingRoot` - it breaks standalone in Docker |
 | `sh: prisma: not found` | Set `ENV PATH="/srv/app/node_modules/.bin:$PATH"` and copy `node_modules/.bin` |
 | `Cannot find module 'get-tsconfig'` | Don't use tsx at runtime. Pre-compile seed.ts to JS |
 | `Cannot find type definition file for 'minimatch'` | Add `--types node` flag to tsc command |
