@@ -21,6 +21,9 @@ This guide documents all modifications needed to deploy the Traffic Control Plan
 13. [Environment Variables](#13-environment-variables)
 14. [Pre-Push Checklist](#14-pre-push-checklist)
 15. [Common Errors & Fixes](#15-common-errors--fixes)
+16. [Troubleshooting 502 Errors](#16-troubleshooting-502-errors)
+17. [Coolify-Specific Deployment](#17-coolify-specific-deployment)
+18. [Verifying Successful Deployment](#18-verifying-successful-deployment)
 
 ---
 
@@ -744,6 +747,160 @@ Before every git push, verify:
 | File uploads failing | Ensure uploads volume mounted at `/srv/app/uploads` |
 | Files not persisting after restart | Check `uploads-data` volume uses `/srv/app/uploads` |
 | COPY failed: file not found | Ensure `nextjs_space/` prefix on all COPY source paths |
+
+---
+
+## 16. Troubleshooting 502 Errors
+
+A **502 Bad Gateway** error means the reverse proxy (Coolify/Traefik/Nginx) cannot connect to your application. Here's how to diagnose:
+
+### Step 1: Check if Container is Running
+
+```bash
+docker ps -a | grep traffic
+# OR for Coolify:
+docker ps -a | grep tcp
+```
+
+**Expected:** Container should show status `Up` with port `3000` exposed.
+
+**If container is not running or keeps restarting:**
+```bash
+docker logs <container_name> --tail 200
+```
+
+### Step 2: Common Causes & Fixes
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Container immediately exits | Missing `DATABASE_URL` | Add database connection string to env vars |
+| "Connection refused to localhost:5432" | Database not accessible | Check database is running, use container name not `localhost` |
+| "prisma: not found" in logs | Missing Prisma CLI | Ensure Dockerfile copies `node_modules/.bin` |
+| "Cannot find module '@prisma/client'" | Prisma client not generated | Ensure `npx prisma generate` runs in builder stage |
+| Container runs but 502 persists | Wrong port or hostname binding | Ensure `ENV PORT=3000` and `ENV HOSTNAME="0.0.0.0"` |
+| Health check fails | App not starting properly | Check entrypoint logs, verify `server.js` exists |
+
+### Step 3: Database Connection Issues
+
+For Coolify with managed PostgreSQL:
+```env
+# Use container name, not localhost
+DATABASE_URL='postgresql://user:password@tcp-db:5432/tcp'
+```
+
+For external database:
+```env
+# Use actual IP or domain
+DATABASE_URL='postgresql://user:password@your-db-host.com:5432/tcp'
+```
+
+### Step 4: Verify App Starts Correctly
+
+Enter the container and check manually:
+```bash
+docker exec -it <container_name> sh
+# Inside container:
+ls -la /srv/app/
+node server.js
+```
+
+### Step 5: Coolify-Specific Checks
+
+1. **Environment Variables**: In Coolify dashboard → Your App → Environment → Ensure all required vars are set
+2. **Build Pack**: Use "Dockerfile" build pack, not "Nixpacks"
+3. **Port Configuration**: Coolify should auto-detect port 3000 from `EXPOSE`
+4. **Health Check**: Coolify uses the Dockerfile HEALTHCHECK - ensure `/api/health` endpoint works
+
+### Step 6: Full Rebuild
+
+If all else fails, clear Docker cache completely:
+```bash
+docker system prune -a --volumes
+docker builder prune -a
+# Then rebuild
+docker compose up -d --build
+```
+
+---
+
+## 17. Coolify-Specific Deployment
+
+### Initial Setup
+
+1. **Create New Resource** → Select "Docker Compose" or "Dockerfile"
+2. **Connect Repository**: Link to `https://github.com/krocs2k/Traffic-Control-Plane`
+3. **Build Configuration**:
+   - Build Pack: `Dockerfile`
+   - Dockerfile Location: `./Dockerfile`
+   - Context: `.` (root)
+
+### Environment Variables in Coolify
+
+Add these in Coolify's Environment section:
+
+```env
+DATABASE_URL=postgresql://tcp:your_password@tcp-db:5432/tcp
+NEXTAUTH_SECRET=your-generated-secret
+NEXTAUTH_URL=https://your-domain.com
+LLM_API_KEY=your-openai-key
+LLM_MODEL=gpt-4o-mini
+```
+
+### Database Setup in Coolify
+
+**Option A: Coolify-Managed PostgreSQL**
+1. Create a PostgreSQL resource in Coolify
+2. Use the internal connection URL provided
+3. Container name format: `coolify-<project>-postgres`
+
+**Option B: External Database**
+1. Use your external database URL
+2. Ensure firewall allows connection from VPS IP
+
+### Networking
+
+Coolify automatically:
+- Creates a network for your containers
+- Configures Traefik reverse proxy
+- Handles SSL certificates via Let's Encrypt
+
+Ensure containers are on the same network if using Coolify-managed database.
+
+### Persistent Storage
+
+In Coolify's Storage section, add:
+- **Source**: Named volume `uploads-data`
+- **Destination**: `/srv/app/uploads`
+
+---
+
+## 18. Verifying Successful Deployment
+
+After deployment, verify these endpoints:
+
+### Health Check
+```bash
+curl https://your-domain.com/api/health
+# Expected: {"status":"healthy"}
+```
+
+### Login Page
+```bash
+curl -I https://your-domain.com/login
+# Expected: HTTP 200
+```
+
+### Container Logs (Healthy Start)
+```
+Starting application...
+Waiting for database connection...
+Database connected!
+Running database migrations...
+Database schema synchronized!
+Checking database state...
+Running seed script...
+Starting Next.js server...
+```
 
 ---
 
