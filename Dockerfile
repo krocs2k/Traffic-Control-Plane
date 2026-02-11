@@ -24,16 +24,31 @@ RUN npx tsc scripts/seed.ts --outDir scripts/compiled --esModuleInterop \
     --module commonjs --target es2020 --skipLibCheck --types node \
     || echo "Using pre-compiled seed.js"
 
-# Debug: Show next.config.js content to verify standalone is set
-RUN echo "=== next.config.js content ===" && cat next.config.js && echo "==="
+# Create a clean next.config.js for Docker (removes problematic experimental settings)
+RUN cat > next.config.js << 'NEXTCONFIG'
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  output: 'standalone',
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
+  typescript: {
+    ignoreBuildErrors: false,
+  },
+  images: { unoptimized: true },
+};
+module.exports = nextConfig;
+NEXTCONFIG
 
-# Build the application (standalone output is hardcoded in next.config.js)
+# Verify next.config.js
+RUN echo "=== next.config.js ===" && cat next.config.js
+
+# Build the application
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN yarn build
 
-# Debug: Show build output structure
-RUN echo "=== Build output structure ===" && ls -la .next/ && \
-    (ls -la .next/standalone/ 2>/dev/null || echo "No standalone directory found!")
+# Verify standalone output exists
+RUN ls -la .next/standalone/ && ls -la .next/standalone/.next/
 
 # Production image - use /srv/app to avoid any cached layer conflicts
 FROM base AS runner
