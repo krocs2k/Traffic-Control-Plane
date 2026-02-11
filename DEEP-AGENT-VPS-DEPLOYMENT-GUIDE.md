@@ -747,6 +747,7 @@ Before every git push, verify:
 | File uploads failing | Ensure uploads volume mounted at `/srv/app/uploads` |
 | Files not persisting after restart | Check `uploads-data` volume uses `/srv/app/uploads` |
 | COPY failed: file not found | Ensure `nextjs_space/` prefix on all COPY source paths |
+| 502 but container is running | App binding to `127.0.0.1` instead of `0.0.0.0` | Ensure `ENV HOSTNAME="0.0.0.0"` in Dockerfile |
 
 ---
 
@@ -779,6 +780,30 @@ docker logs <container_name> --tail 200
 | "Cannot find module '@prisma/client'" | Prisma client not generated | Ensure `npx prisma generate` runs in builder stage |
 | Container runs but 502 persists | Wrong port or hostname binding | Ensure `ENV PORT=3000` and `ENV HOSTNAME="0.0.0.0"` |
 | Health check fails | App not starting properly | Check entrypoint logs, verify `server.js` exists |
+
+### Critical: Network Binding Configuration
+
+The app **MUST** listen on `0.0.0.0`, not `127.0.0.1`. This is configured in the Dockerfile:
+
+```dockerfile
+ENV PORT=3000
+ENV HOSTNAME="0.0.0.0"
+```
+
+**Why this matters:**
+- `0.0.0.0` binds to ALL network interfaces (accessible from outside the container)
+- `127.0.0.1` only binds to localhost (only accessible from INSIDE the container)
+
+If your app binds to `127.0.0.1`, the reverse proxy (Traefik/Nginx/Coolify) cannot reach it, resulting in 502 errors.
+
+**Verification:** Check container logs for the startup message:
+```
+Starting Next.js server...
+▲ Next.js 14.x.x
+- Local: http://0.0.0.0:3000
+```
+
+If you see `http://127.0.0.1:3000` instead, the binding is incorrect.
 
 ### Step 3: Database Connection Issues
 
