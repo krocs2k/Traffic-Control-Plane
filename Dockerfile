@@ -24,10 +24,15 @@ RUN npx tsc scripts/seed.ts --outDir scripts/compiled --esModuleInterop \
     --module commonjs --target es2020 --skipLibCheck --types node \
     || echo "Using pre-compiled seed.js"
 
+# Force standalone output in next.config.js (env var approach can be unreliable)
+RUN sed -i "s/output: process.env.NEXT_OUTPUT_MODE/output: 'standalone'/" next.config.js
+
 # Build the application
 ENV NEXT_TELEMETRY_DISABLED=1
-ENV NEXT_OUTPUT_MODE=standalone
 RUN yarn build
+
+# Verify standalone output exists
+RUN ls -la .next/standalone/ && ls -la .next/standalone/.next/
 
 # Production image - use /srv/app to avoid any cached layer conflicts
 FROM base AS runner
