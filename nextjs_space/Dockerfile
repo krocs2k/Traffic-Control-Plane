@@ -48,31 +48,23 @@ RUN adduser --system --uid 1001 nextjs
 
 COPY --from=builder /app/public ./public
 
-# Copy standalone output to temp location first, then selectively move contents
-# This avoids "cannot replace directory with file" errors from node_modules conflicts
+# Copy standalone, static, prisma, and extra_modules to temp locations
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone /tmp/standalone
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static /tmp/static
+COPY --from=builder /app/prisma /tmp/prisma
+COPY --from=builder --chown=nextjs:nodejs /app/extra_modules /tmp/extra_modules
 
-# Create proper directory structure and copy standalone contents EXCLUDING node_modules and .next
-# Using find + cp to skip problematic symlinks/files that cause "cannot replace directory with file" errors
-RUN mkdir -p ./.next ./node_modules/.bin ./node_modules/@prisma ./node_modules/.prisma && \
-    chown -R nextjs:nodejs ./.next ./node_modules && \
-    cd /tmp/standalone && \
-    find . -maxdepth 1 ! -name node_modules ! -name .next ! -name . -exec cp -r {} /app/ \; && \
-    if [ -d .next ]; then cp -r .next/. /app/.next/ 2>/dev/null || true; fi && \
-    rm -rf /tmp/standalone
-
-# Copy static files
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
-
-# Copy Prisma schema
-COPY --from=builder /app/prisma ./prisma
-
-# Copy additional node_modules contents (into clean directory structure)
-COPY --from=builder --chown=nextjs:nodejs /app/extra_modules/.prisma/ ./node_modules/.prisma/
-COPY --from=builder --chown=nextjs:nodejs /app/extra_modules/@prisma/ ./node_modules/@prisma/
-COPY --from=builder --chown=nextjs:nodejs /app/extra_modules/prisma/ ./node_modules/prisma/
-COPY --from=builder --chown=nextjs:nodejs /app/extra_modules/bcryptjs/ ./node_modules/bcryptjs/
-COPY --from=builder --chown=nextjs:nodejs /app/extra_modules/.bin/ ./node_modules/.bin/
+# Single RUN command to assemble everything - avoids Docker layer conflicts with node_modules
+RUN cd /tmp/standalone && \
+    for item in *; do [ "$item" != "node_modules" ] && cp -r "$item" /app/ 2>/dev/null || true; done && \
+    for item in .*; do [ "$item" != "." ] && [ "$item" != ".." ] && [ "$item" != "node_modules" ] && cp -r "$item" /app/ 2>/dev/null || true; done && \
+    rm -rf /app/node_modules 2>/dev/null || true && \
+    mkdir -p /app/node_modules && \
+    cp -r /tmp/extra_modules/. /app/node_modules/ && \
+    cp -r /tmp/static /app/.next/static && \
+    cp -r /tmp/prisma /app/prisma && \
+    chown -R nextjs:nodejs /app/node_modules /app/.next /app/prisma && \
+    rm -rf /tmp/standalone /tmp/static /tmp/prisma /tmp/extra_modules
 
 # Add node_modules/.bin to PATH for prisma CLI access
 ENV PATH="/app/node_modules/.bin:$PATH"
