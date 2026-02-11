@@ -748,6 +748,7 @@ Before every git push, verify:
 | Files not persisting after restart | Check `uploads-data` volume uses `/srv/app/uploads` |
 | COPY failed: file not found | Ensure `nextjs_space/` prefix on all COPY source paths |
 | 502 but container is running | App binding to `127.0.0.1` instead of `0.0.0.0` | Ensure `ENV HOSTNAME="0.0.0.0"` in Dockerfile |
+| `bash: executable file not found` (code 127) | Alpine Linux doesn't have bash | Use `docker exec -it <container> sh` instead of `bash` |
 
 ---
 
@@ -823,11 +824,17 @@ DATABASE_URL='postgresql://user:password@your-db-host.com:5432/tcp'
 
 Enter the container and check manually:
 ```bash
+# IMPORTANT: Use 'sh' not 'bash' - Alpine Linux doesn't have bash installed
 docker exec -it <container_name> sh
+
 # Inside container:
 ls -la /srv/app/
 node server.js
 ```
+
+> ⚠️ **Common Error:** `exec: "bash": executable file not found in $PATH` (exit code 127)
+> 
+> **Fix:** Alpine Linux uses `sh` (BusyBox shell), not `bash`. Always use `docker exec -it <container> sh`
 
 ### Step 5: Coolify-Specific Checks
 
