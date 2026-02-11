@@ -1,6 +1,6 @@
 FROM node:20-alpine AS base
 
-# Cache bust: 2026-02-11-v2 - Force rebuild to use next start instead of node server.js
+# Cache bust: 2026-02-11-v3 - CRITICAL: Remove server.js, use next start only
 # Install dependencies only when needed
 FROM base AS deps
 RUN apk add --no-cache libc6-compat wget openssl
@@ -25,6 +25,9 @@ RUN npx tsc scripts/seed.ts --outDir scripts/compiled --esModuleInterop \
     --module commonjs --target es2020 --skipLibCheck --types node \
     || echo "Using pre-compiled seed.js"
 
+# Clean any previous build artifacts to prevent standalone remnants
+RUN rm -rf .next
+
 # Create a clean next.config.js for Docker (NO standalone - use next start instead)
 RUN cat > next.config.js << 'NEXTCONFIG'
 /** @type {import('next').NextConfig} */
@@ -40,15 +43,20 @@ const nextConfig = {
 module.exports = nextConfig;
 NEXTCONFIG
 
-# Verify next.config.js
-RUN echo "=== next.config.js ===" && cat next.config.js
+# Verify next.config.js has NO standalone
+RUN echo "=== next.config.js ===" && cat next.config.js && \
+    echo "=== Verifying no standalone in config ===" && \
+    ! grep -q "standalone" next.config.js && echo "✓ No standalone in config"
 
 # Build the application
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN yarn build
 
-# Verify build output exists
-RUN ls -la .next/ && echo "✓ Build completed"
+# Verify build output exists and NO standalone folder
+RUN ls -la .next/ && \
+    echo "=== Checking for standalone (should NOT exist) ===" && \
+    ! test -d .next/standalone && echo "✓ No standalone folder - correct!" || \
+    (echo "ERROR: standalone folder exists!" && rm -rf .next/standalone && echo "Removed it")
 
 # Production image - use /srv/app to avoid any cached layer conflicts
 FROM base AS runner
@@ -79,11 +87,17 @@ COPY --from=builder --chown=nextjs:nodejs /build/.next ./.next
 COPY --from=builder --chown=nextjs:nodejs /build/public ./public
 COPY --from=builder --chown=nextjs:nodejs /build/prisma ./prisma
 
-# Verify structure
+# CRITICAL: Remove any server.js if it exists (from cached standalone builds)
+RUN rm -f ./server.js && \
+    rm -rf ./.next/standalone
+
+# Verify structure - NO server.js should exist
 RUN echo "=== Final structure ===" && ls -la ./ && \
     echo "=== .next contents ===" && ls -la ./.next/ && \
     echo "=== Verifying next module ===" && ls -la ./node_modules/next/ && \
-    echo "✓ All files copied"
+    echo "=== Verifying NO server.js ===" && \
+    ! test -f ./server.js && echo "✓ No server.js - will use next start" || \
+    (echo "ERROR: server.js exists!" && exit 1)
 
 # Copy compiled seed script
 COPY --from=builder --chown=nextjs:nodejs /build/scripts/compiled ./scripts
