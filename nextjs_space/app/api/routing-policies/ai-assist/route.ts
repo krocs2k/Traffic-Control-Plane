@@ -74,14 +74,23 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Messages array required' }, { status: 400 });
     }
 
-    const response = await fetch('https://apps.abacus.ai/v1/chat/completions', {
+    // Use configurable LLM API endpoint (OpenAI-compatible)
+    const llmBaseUrl = process.env.LLM_API_BASE_URL || 'https://api.openai.com/v1';
+    const llmApiKey = process.env.LLM_API_KEY || process.env.OPENAI_API_KEY;
+    const llmModel = process.env.LLM_MODEL || 'gpt-4o-mini';
+
+    if (!llmApiKey) {
+      return NextResponse.json({ error: 'LLM API key not configured' }, { status: 500 });
+    }
+
+    const response = await fetch(`${llmBaseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.ABACUSAI_API_KEY}`
+        'Authorization': `Bearer ${llmApiKey}`
       },
       body: JSON.stringify({
-        model: 'gpt-4.1-mini',
+        model: llmModel,
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },
           ...messages

@@ -44,8 +44,9 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  // Skip if hostname ends with known platform domains
-  if (hostname.endsWith('.abacusai.app') || hostname.endsWith('.abacus.ai')) {
+  // Skip if hostname ends with known platform domains (configurable via env)
+  const platformDomains = process.env.PLATFORM_DOMAINS?.split(',') || [];
+  if (platformDomains.some(domain => hostname.endsWith(domain.trim()))) {
     return NextResponse.next();
   }
 

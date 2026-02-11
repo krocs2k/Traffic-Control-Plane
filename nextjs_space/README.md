@@ -52,7 +52,7 @@ A comprehensive dashboard for managing database/backend traffic with load balanc
 3. Set up environment variables:
    ```bash
    cp .env.example .env
-   # Edit .env with your database URL and secrets
+   # Edit .env with your configuration (see Environment Variables below)
    ```
 
 4. Initialize the database:
@@ -75,6 +75,25 @@ A comprehensive dashboard for managing database/backend traffic with load balanc
 docker build -t traffic-control-plane .
 docker run -p 3000:3000 --env-file .env traffic-control-plane
 ```
+
+## Environment Variables
+
+| Variable | Required | Description | Default |
+|----------|----------|-------------|---------|
+| `DATABASE_URL` | Yes | PostgreSQL connection string | - |
+| `NEXTAUTH_URL` | Yes | Full URL of your deployment | `http://localhost:3000` |
+| `NEXTAUTH_SECRET` | Yes | Secret for NextAuth.js sessions | - |
+| `LLM_API_KEY` or `OPENAI_API_KEY` | No | API key for AI features (recommendations, routing assistant) | - |
+| `LLM_API_BASE_URL` | No | Base URL for OpenAI-compatible LLM API | `https://api.openai.com/v1` |
+| `LLM_MODEL` | No | LLM model to use | `gpt-4o-mini` |
+| `PLATFORM_DOMAINS` | No | Comma-separated list of platform domains to skip in middleware | - |
+
+### AI Features (Optional)
+
+The AI-powered features (routing policy assistant, infrastructure recommendations) require an OpenAI-compatible API. You can use:
+- **OpenAI**: Set `OPENAI_API_KEY` 
+- **Azure OpenAI**: Set `LLM_API_BASE_URL` and `LLM_API_KEY`
+- **Any OpenAI-compatible provider**: Configure `LLM_API_BASE_URL`, `LLM_API_KEY`, and `LLM_MODEL`
 
 ## Demo Credentials
 
