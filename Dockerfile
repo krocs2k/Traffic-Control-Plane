@@ -71,32 +71,36 @@ ENV PATH="/srv/app/node_modules/.bin:$PATH"
 RUN mkdir -p ./uploads/public ./uploads/private && \
     chown -R nextjs:nodejs ./uploads
 
-# Step 1: Copy full node_modules FIRST (before standalone)
-# This ensures we have all dependencies available
-COPY --from=builder --chown=nextjs:nodejs /build/node_modules ./node_modules
+# Copy package.json and prisma schema for dependency installation
+COPY --from=builder --chown=nextjs:nodejs /build/package.json ./
+COPY --from=builder --chown=nextjs:nodejs /build/prisma ./prisma
 
-# Verify 'next' module exists
-RUN ls -la ./node_modules/next/ && echo "✓ 'next' module found"
+# Install production dependencies fresh in runner stage
+# This ensures proper module resolution without copy/symlink issues
+RUN yarn install --production --frozen-lockfile || yarn install --production
 
-# Step 2: Copy standalone server.js and package.json
+# Generate Prisma client in runner
+RUN npx prisma generate
+
+# Verify 'next' module exists after install
+RUN ls -la ./node_modules/next/ && echo "✓ 'next' module installed" && \
+    ls -la ./node_modules/.prisma/client/ && echo "✓ Prisma client generated"
+
+# Copy standalone server.js (overwrites the one from package.json if any)
 COPY --from=builder --chown=nextjs:nodejs /build/.next/standalone/server.js ./
-COPY --from=builder --chown=nextjs:nodejs /build/.next/standalone/package.json ./
 
-# Step 3: Copy the .next build output from standalone
+# Copy the .next build output from standalone
 COPY --from=builder --chown=nextjs:nodejs /build/.next/standalone/.next ./.next
 
-# Verify structure
+# Verify final structure
 RUN echo "=== Final structure ===" && ls -la ./ && \
     echo "=== .next contents ===" && ls -la ./.next/ && \
     echo "=== node_modules/next ===" && ls -la ./node_modules/next/ && \
-    echo "=== Checking server.js line 16 ===" && head -20 server.js
+    echo "=== Checking server.js requires ===" && head -20 server.js
 
 # Copy static assets
 COPY --from=builder --chown=nextjs:nodejs /build/public ./public
 COPY --from=builder --chown=nextjs:nodejs /build/.next/static ./.next/static
-
-# Copy Prisma schema
-COPY --from=builder --chown=nextjs:nodejs /build/prisma ./prisma
 
 # Copy compiled seed script
 COPY --from=builder --chown=nextjs:nodejs /build/scripts/compiled ./scripts
