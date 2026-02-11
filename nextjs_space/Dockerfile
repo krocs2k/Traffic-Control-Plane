@@ -24,6 +24,17 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ENV NEXT_OUTPUT_MODE=standalone
 RUN yarn build
 
+# Prepare additional node_modules for runner stage
+# This avoids conflicts with standalone's node_modules
+RUN mkdir -p /app/extra_modules && \
+    cp -r /app/node_modules/.prisma /app/extra_modules/ && \
+    cp -r /app/node_modules/@prisma /app/extra_modules/ && \
+    cp -r /app/node_modules/prisma /app/extra_modules/ && \
+    cp -r /app/node_modules/bcryptjs /app/extra_modules/ && \
+    mkdir -p /app/extra_modules/.bin && \
+    cp -r /app/node_modules/.bin/prisma /app/extra_modules/.bin/ 2>/dev/null || true && \
+    cp -r /app/node_modules/.bin/prisma.cmd /app/extra_modules/.bin/ 2>/dev/null || true
+
 # Production image, copy all the files and run next
 FROM base AS runner
 RUN apk add --no-cache wget
@@ -45,21 +56,21 @@ RUN chown nextjs:nodejs .next
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
-# Copy Prisma schema and generated client
+# Copy Prisma schema
 COPY --from=builder /app/prisma ./prisma
-COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
-COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
 
-# Copy Prisma CLI binaries for db push/seed commands
-COPY --from=builder /app/node_modules/.bin ./node_modules/.bin
-COPY --from=builder /app/node_modules/prisma ./node_modules/prisma
+# Copy additional node_modules (pre-staged to avoid conflicts)
+COPY --from=builder /app/extra_modules/.prisma ./node_modules/.prisma
+COPY --from=builder /app/extra_modules/@prisma ./node_modules/@prisma
+COPY --from=builder /app/extra_modules/prisma ./node_modules/prisma
+COPY --from=builder /app/extra_modules/bcryptjs ./node_modules/bcryptjs
+COPY --from=builder /app/extra_modules/.bin ./node_modules/.bin
 
 # Add node_modules/.bin to PATH for prisma CLI access
 ENV PATH="/app/node_modules/.bin:$PATH"
 
-# Copy pre-compiled seed script and dependencies
+# Copy pre-compiled seed script
 COPY --from=builder /app/scripts/compiled ./scripts
-COPY --from=builder /app/node_modules/bcryptjs ./node_modules/bcryptjs
 
 # Copy entrypoint script
 COPY docker-entrypoint.sh ./
