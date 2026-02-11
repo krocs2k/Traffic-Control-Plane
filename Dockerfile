@@ -71,20 +71,25 @@ ENV PATH="/srv/app/node_modules/.bin:$PATH"
 RUN mkdir -p ./uploads/public ./uploads/private && \
     chown -R nextjs:nodejs ./uploads
 
-# Copy the ENTIRE standalone build (preserves Next.js's expected structure)
-COPY --from=builder --chown=nextjs:nodejs /build/.next/standalone/ ./
-
-# Verify standalone structure
-RUN echo "=== Standalone structure ===" && ls -la ./ && ls -la ./.next/
-
-# Copy full node_modules from builder to ensure all dependencies are available
-# This overwrites the traced node_modules with complete dependencies
+# Step 1: Copy full node_modules FIRST (before standalone)
+# This ensures we have all dependencies available
 COPY --from=builder --chown=nextjs:nodejs /build/node_modules ./node_modules
 
-# Verify 'next' module exists and has the server entry point
-RUN ls -la ./node_modules/next/ && \
-    ls -la ./node_modules/next/dist/server/ && \
-    echo "✓ 'next' module found with server files"
+# Verify 'next' module exists
+RUN ls -la ./node_modules/next/ && echo "✓ 'next' module found"
+
+# Step 2: Copy standalone server.js and package.json
+COPY --from=builder --chown=nextjs:nodejs /build/.next/standalone/server.js ./
+COPY --from=builder --chown=nextjs:nodejs /build/.next/standalone/package.json ./
+
+# Step 3: Copy the .next build output from standalone
+COPY --from=builder --chown=nextjs:nodejs /build/.next/standalone/.next ./.next
+
+# Verify structure
+RUN echo "=== Final structure ===" && ls -la ./ && \
+    echo "=== .next contents ===" && ls -la ./.next/ && \
+    echo "=== node_modules/next ===" && ls -la ./node_modules/next/ && \
+    echo "=== Checking server.js line 16 ===" && head -20 server.js
 
 # Copy static assets
 COPY --from=builder --chown=nextjs:nodejs /build/public ./public
