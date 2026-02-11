@@ -24,16 +24,22 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ENV NEXT_OUTPUT_MODE=standalone
 RUN yarn build
 
-# Prepare additional node_modules for runner stage
-# This avoids conflicts with standalone's node_modules
-RUN mkdir -p /app/extra_modules && \
-    cp -r /app/node_modules/.prisma /app/extra_modules/ && \
-    cp -r /app/node_modules/@prisma /app/extra_modules/ && \
-    cp -r /app/node_modules/prisma /app/extra_modules/ && \
-    cp -r /app/node_modules/bcryptjs /app/extra_modules/ && \
-    mkdir -p /app/extra_modules/.bin && \
-    cp -r /app/node_modules/.bin/prisma /app/extra_modules/.bin/ 2>/dev/null || true && \
-    cp -r /app/node_modules/.bin/prisma.cmd /app/extra_modules/.bin/ 2>/dev/null || true
+# Package everything into tarballs to avoid Docker overlay conflicts
+# Remove node_modules from standalone BEFORE tarring
+RUN rm -rf /app/.next/standalone/node_modules && \
+    cd /app/.next && tar czf /tmp/standalone.tar.gz standalone && \
+    tar czf /tmp/static.tar.gz static && \
+    cd /app && tar czf /tmp/prisma.tar.gz prisma && \
+    cd /app && tar czf /tmp/public.tar.gz public && \
+    mkdir -p /tmp/extra_modules && \
+    cp -r /app/node_modules/.prisma /tmp/extra_modules/ && \
+    cp -r /app/node_modules/@prisma /tmp/extra_modules/ && \
+    cp -r /app/node_modules/prisma /tmp/extra_modules/ && \
+    cp -r /app/node_modules/bcryptjs /tmp/extra_modules/ && \
+    mkdir -p /tmp/extra_modules/.bin && \
+    cp /app/node_modules/.bin/prisma /tmp/extra_modules/.bin/ 2>/dev/null || true && \
+    cd /tmp && tar czf /tmp/extra_modules.tar.gz extra_modules && \
+    rm -rf /tmp/extra_modules
 
 # Production image, copy all the files and run next
 FROM base AS runner
@@ -46,25 +52,26 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
 
-COPY --from=builder /app/public ./public
+# Copy tarballs only - no directory conflicts possible
+COPY --from=builder /tmp/standalone.tar.gz /tmp/
+COPY --from=builder /tmp/static.tar.gz /tmp/
+COPY --from=builder /tmp/prisma.tar.gz /tmp/
+COPY --from=builder /tmp/public.tar.gz /tmp/
+COPY --from=builder /tmp/extra_modules.tar.gz /tmp/
 
-# Copy standalone, static, prisma, and extra_modules to temp locations
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone /tmp/standalone
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static /tmp/static
-COPY --from=builder /app/prisma /tmp/prisma
-COPY --from=builder --chown=nextjs:nodejs /app/extra_modules /tmp/extra_modules
-
-# Single RUN command to assemble everything - avoids Docker layer conflicts with node_modules
-RUN cd /tmp/standalone && \
-    for item in *; do [ "$item" != "node_modules" ] && cp -r "$item" /app/ 2>/dev/null || true; done && \
-    for item in .*; do [ "$item" != "." ] && [ "$item" != ".." ] && [ "$item" != "node_modules" ] && cp -r "$item" /app/ 2>/dev/null || true; done && \
-    rm -rf /app/node_modules 2>/dev/null || true && \
+# Extract everything in a single layer
+RUN cd /tmp && \
+    tar xzf standalone.tar.gz && \
+    mv standalone/* /app/ && \
+    mkdir -p /app/.next && \
+    tar xzf static.tar.gz -C /app/.next && \
+    tar xzf prisma.tar.gz -C /app && \
+    tar xzf public.tar.gz -C /app && \
+    tar xzf extra_modules.tar.gz && \
     mkdir -p /app/node_modules && \
-    cp -r /tmp/extra_modules/. /app/node_modules/ && \
-    cp -r /tmp/static /app/.next/static && \
-    cp -r /tmp/prisma /app/prisma && \
-    chown -R nextjs:nodejs /app/node_modules /app/.next /app/prisma && \
-    rm -rf /tmp/standalone /tmp/static /tmp/prisma /tmp/extra_modules
+    cp -r extra_modules/* /app/node_modules/ && \
+    chown -R nextjs:nodejs /app && \
+    rm -rf /tmp/*
 
 # Add node_modules/.bin to PATH for prisma CLI access
 ENV PATH="/app/node_modules/.bin:$PATH"
