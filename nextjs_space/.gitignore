@@ -13,5 +13,8 @@ node_modules/
 .env.test.local
 .env.production.local
 
+# TypeScript cache
+tsconfig.tsbuildinfo
+
 # Docker
 .dockerignore
