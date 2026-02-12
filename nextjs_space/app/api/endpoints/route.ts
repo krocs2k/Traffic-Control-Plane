@@ -15,13 +15,19 @@ function generateSlug(name: string): string {
   return `${base}-${suffix}`;
 }
 
-// GET /api/endpoints - List all endpoints for the org
+// GET /api/endpoints - List all endpoints for the org with pagination
 export async function GET(request: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
     if (!session?.user?.email) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
+
+    const { searchParams } = new URL(request.url);
+    const page = Math.max(1, parseInt(searchParams.get('page') || '1', 10));
+    const limit = Math.min(100, Math.max(1, parseInt(searchParams.get('limit') || '20', 10)));
+    const search = searchParams.get('search') || '';
+    const status = searchParams.get('status'); // 'active' | 'inactive' | null
 
     const user = await prisma.user.findUnique({
       where: { email: session.user.email },
@@ -38,24 +44,51 @@ export async function GET(request: NextRequest) {
 
     const orgIds = user.memberships.map(m => m.orgId);
 
-    const endpoints = await prisma.trafficEndpoint.findMany({
-      where: { orgId: { in: orgIds } },
-      orderBy: { createdAt: 'desc' }
-    });
+    // Build where clause with filters
+    const where: Record<string, unknown> = { orgId: { in: orgIds } };
+    
+    if (search) {
+      where.OR = [
+        { name: { contains: search, mode: 'insensitive' } },
+        { slug: { contains: search, mode: 'insensitive' } },
+        { customDomain: { contains: search, mode: 'insensitive' } },
+      ];
+    }
+    
+    if (status === 'active') {
+      where.isActive = true;
+    } else if (status === 'inactive') {
+      where.isActive = false;
+    }
 
-    // Fetch related cluster and policy info
+    // Get paginated endpoints and total count
+    const [endpoints, total] = await Promise.all([
+      prisma.trafficEndpoint.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      prisma.trafficEndpoint.count({ where }),
+    ]);
+
+    // Fetch related cluster and policy info only for returned endpoints
     const clusterIds = endpoints.map(e => e.clusterId).filter(Boolean) as string[];
     const policyIds = endpoints.map(e => e.policyId).filter(Boolean) as string[];
 
     const [clusters, policies] = await Promise.all([
-      prisma.backendCluster.findMany({
-        where: { id: { in: clusterIds } },
-        select: { id: true, name: true, strategy: true }
-      }),
-      prisma.routingPolicy.findMany({
-        where: { id: { in: policyIds } },
-        select: { id: true, name: true, type: true }
-      })
+      clusterIds.length > 0 
+        ? prisma.backendCluster.findMany({
+            where: { id: { in: clusterIds } },
+            select: { id: true, name: true, strategy: true }
+          })
+        : [],
+      policyIds.length > 0
+        ? prisma.routingPolicy.findMany({
+            where: { id: { in: policyIds } },
+            select: { id: true, name: true, type: true }
+          })
+        : []
     ]);
 
     const clusterMap = new Map(clusters.map(c => [c.id, c]));
@@ -69,7 +102,15 @@ export async function GET(request: NextRequest) {
       policy: e.policyId ? policyMap.get(e.policyId) : null
     }));
 
-    return NextResponse.json(endpointsWithRelations);
+    return NextResponse.json({
+      endpoints: endpointsWithRelations,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
   } catch (error) {
     console.error('Error fetching endpoints:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

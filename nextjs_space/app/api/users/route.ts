@@ -11,24 +11,54 @@ export async function GET(request: Request) {
     const auth = await requireAuth();
     if (auth instanceof NextResponse) return auth;
 
-    const members = await prisma.organizationMember.findMany({
-      where: { orgId: auth?.orgId ?? '' },
-      include: {
-        user: {
-          select: {
-            id: true,
-            email: true,
-            name: true,
-            avatarUrl: true,
-            status: true,
+    const { searchParams } = new URL(request?.url ?? '');
+    const page = Math.max(1, parseInt(searchParams?.get?.('page') ?? '1', 10));
+    const limit = Math.min(100, Math.max(1, parseInt(searchParams?.get?.('limit') ?? '20', 10)));
+    const search = searchParams?.get?.('search') ?? '';
+    const roleFilter = searchParams?.get?.('role');
+
+    const where: Record<string, unknown> = { orgId: auth?.orgId ?? '' };
+    
+    // Build search/filter conditions
+    const andConditions: Record<string, unknown>[] = [];
+    if (search) {
+      andConditions.push({
+        OR: [
+          { user: { email: { contains: search, mode: 'insensitive' } } },
+          { user: { name: { contains: search, mode: 'insensitive' } } },
+        ],
+      });
+    }
+    if (roleFilter) {
+      andConditions.push({ role: roleFilter });
+    }
+    if (andConditions.length > 0) {
+      where.AND = andConditions;
+    }
+
+    const [members, total] = await Promise.all([
+      prisma.organizationMember.findMany({
+        where,
+        include: {
+          user: {
+            select: {
+              id: true,
+              email: true,
+              name: true,
+              avatarUrl: true,
+              status: true,
+            },
+          },
+          invitedBy: {
+            select: { name: true },
           },
         },
-        invitedBy: {
-          select: { name: true },
-        },
-      },
-      orderBy: { joinedAt: 'asc' },
-    });
+        orderBy: { joinedAt: 'asc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      prisma.organizationMember.count({ where }),
+    ]);
 
     const users = members?.map?.((m: any) => ({
       id: m?.id ?? '',
@@ -42,7 +72,15 @@ export async function GET(request: Request) {
       invitedBy: m?.invitedBy?.name ? { name: m?.invitedBy?.name } : null,
     })) ?? [];
 
-    return NextResponse.json({ users });
+    return NextResponse.json({
+      users,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
   } catch (error) {
     console.error('Get users error:', error);
     return NextResponse.json(

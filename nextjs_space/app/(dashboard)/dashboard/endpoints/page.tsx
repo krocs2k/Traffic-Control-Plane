@@ -2,7 +2,7 @@
 
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import {
   Link2,
   Plus,
@@ -19,7 +19,9 @@ import {
   Shield,
   Zap,
   ArrowRightLeft,
+  Search,
 } from 'lucide-react';
+import { DataTablePagination } from '@/components/ui/data-table-pagination';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -208,31 +210,54 @@ export default function EndpointsPage() {
   const [saving, setSaving] = useState(false);
   const [copiedSlug, setCopiedSlug] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState('basic');
+  
+  // Pagination state
+  const [page, setPage] = useState(1);
+  const [limit, setLimit] = useState(20);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(0);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
 
   useEffect(() => {
     if (status === 'unauthenticated') {
       router?.replace?.('/login');
     }
   }, [status, router]);
+  
+  // Debounce search input
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchQuery);
+      setPage(1); // Reset to first page on search
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
 
   useEffect(() => {
     if (session?.user?.id) {
       fetchData();
     }
-  }, [session?.user?.id]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.user?.id, page, limit, debouncedSearch]);
 
   const fetchData = async () => {
     try {
       setLoading(true);
+      const searchParam = debouncedSearch ? `&search=${encodeURIComponent(debouncedSearch)}` : '';
       const [endpointsRes, clustersRes, policiesRes] = await Promise.all([
-        fetch('/api/endpoints'),
+        fetch(`/api/endpoints?page=${page}&limit=${limit}${searchParam}`),
         fetch(`/api/backends/clusters?orgId=${session?.user?.currentOrgId}`),
         fetch('/api/routing-policies'),
       ]);
 
       if (endpointsRes.ok) {
         const data = await endpointsRes.json();
-        setEndpoints(data);
+        setEndpoints(data.endpoints || []);
+        if (data.pagination) {
+          setTotal(data.pagination.total);
+          setTotalPages(data.pagination.totalPages);
+        }
       }
       if (clustersRes.ok) {
         const data = await clustersRes.json();
@@ -255,6 +280,15 @@ export default function EndpointsPage() {
     await fetchData();
     setRefreshing(false);
     toast.success('Endpoints refreshed');
+  };
+  
+  const handlePageChange = (newPage: number) => {
+    setPage(newPage);
+  };
+  
+  const handleLimitChange = (newLimit: number) => {
+    setLimit(newLimit);
+    setPage(1);
   };
 
   const openCreateDialog = () => {
@@ -505,13 +539,27 @@ export default function EndpointsPage() {
       {/* Endpoints Table */}
       <Card>
         <CardHeader>
-          <CardTitle>Endpoints</CardTitle>
-          <CardDescription>
-            Each endpoint provides a unique URL with configurable proxy behavior and session affinity
-          </CardDescription>
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div>
+              <CardTitle>Endpoints</CardTitle>
+              <CardDescription>
+                Each endpoint provides a unique URL with configurable proxy behavior and session affinity
+              </CardDescription>
+            </div>
+            <div className="relative w-full sm:w-64">
+              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Search endpoints..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-8"
+              />
+            </div>
+          </div>
         </CardHeader>
         <CardContent>
-          {endpoints.length === 0 ? (
+          {/* Empty state - no endpoints and no search */}
+          {endpoints.length === 0 && !debouncedSearch && (
             <div className="text-center py-12">
               <Globe className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
               <h3 className="text-lg font-medium mb-2">No endpoints yet</h3>
@@ -523,7 +571,22 @@ export default function EndpointsPage() {
                 Create Endpoint
               </Button>
             </div>
-          ) : (
+          )}
+          
+          {/* No results for search */}
+          {endpoints.length === 0 && debouncedSearch && (
+            <div className="text-center py-12">
+              <Search className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+              <h3 className="text-lg font-medium mb-2">No endpoints found</h3>
+              <p className="text-muted-foreground">
+                No endpoints match &quot;{debouncedSearch}&quot;
+              </p>
+            </div>
+          )}
+          
+          {/* Endpoints table */}
+          {endpoints.length > 0 && (
+            <>
             <Table>
               <TableHeader>
                 <TableRow>
@@ -638,6 +701,19 @@ export default function EndpointsPage() {
                 ))}
               </TableBody>
             </Table>
+            
+            {/* Pagination */}
+            {totalPages > 0 && (
+              <DataTablePagination
+                page={page}
+                totalPages={totalPages}
+                total={total}
+                limit={limit}
+                onPageChange={handlePageChange}
+                onLimitChange={handleLimitChange}
+              />
+            )}
+            </>
           )}
         </CardContent>
       </Card>

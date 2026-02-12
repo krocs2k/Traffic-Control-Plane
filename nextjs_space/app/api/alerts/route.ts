@@ -22,22 +22,42 @@ export async function GET(request: NextRequest) {
 
     const orgId = user.memberships[0].orgId;
     const { searchParams } = new URL(request.url);
+    const page = Math.max(1, parseInt(searchParams.get('page') || '1', 10));
+    const limit = Math.min(100, Math.max(1, parseInt(searchParams.get('limit') || '20', 10)));
     const status = searchParams.get('status');
     const severity = searchParams.get('severity');
-    const limit = parseInt(searchParams.get('limit') || '100');
+    const search = searchParams.get('search') || '';
 
     const where: Record<string, unknown> = { orgId };
     if (status) where.status = status;
     if (severity) where.severity = severity;
+    if (search) {
+      where.OR = [
+        { title: { contains: search, mode: 'insensitive' } },
+        { message: { contains: search, mode: 'insensitive' } },
+      ];
+    }
 
-    const alerts = await prisma.alert.findMany({
-      where,
-      include: { rule: { select: { name: true, metric: true, condition: true } } },
-      orderBy: { createdAt: 'desc' },
-      take: limit,
+    const [alerts, total] = await Promise.all([
+      prisma.alert.findMany({
+        where,
+        include: { rule: { select: { name: true, metric: true, condition: true } } },
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      prisma.alert.count({ where }),
+    ]);
+
+    return NextResponse.json({
+      alerts,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
     });
-
-    return NextResponse.json(alerts);
   } catch (error) {
     console.error('Error fetching alerts:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

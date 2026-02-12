@@ -16,6 +16,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Switch } from '@/components/ui/switch';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { DataTablePagination } from '@/components/ui/data-table-pagination';
 import { toast } from 'sonner';
 import {
   Plus,
@@ -35,6 +36,7 @@ import {
   Eye,
   Settings,
   Play,
+  Search,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -116,6 +118,15 @@ export default function AlertsPage() {
   const [editRule, setEditRule] = useState<AlertRule | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [selectedRule, setSelectedRule] = useState<AlertRule | null>(null);
+  
+  // Pagination state
+  const [page, setPage] = useState(1);
+  const [limit, setLimit] = useState(20);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(0);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [severityFilter, setSeverityFilter] = useState<string>('');
+  const [statusFilter, setStatusFilter] = useState<string>('');
 
   const [formData, setFormData] = useState({
     name: '',
@@ -151,29 +162,44 @@ export default function AlertsPage() {
 
   const fetchAlerts = useCallback(async () => {
     try {
-      const res = await fetch('/api/alerts?limit=100');
+      const params = new URLSearchParams({
+        page: String(page),
+        limit: String(limit),
+      });
+      if (searchQuery) params.set('search', searchQuery);
+      if (severityFilter) params.set('severity', severityFilter);
+      if (statusFilter) params.set('status', statusFilter);
+      
+      const res = await fetch(`/api/alerts?${params.toString()}`);
       if (res.ok) {
         const data = await res.json();
-        setAlerts(data);
+        setAlerts(data.alerts || []);
+        if (data.pagination) {
+          setTotal(data.pagination.total);
+          setTotalPages(data.pagination.totalPages);
+        }
       }
     } catch (error) {
       console.error('Error fetching alerts:', error);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [page, limit, searchQuery, severityFilter, statusFilter]);
 
   useEffect(() => {
     fetchRules();
     fetchAlerts();
 
-    // Poll for new alerts every 10 seconds
+    // Poll for new alerts every 30 seconds (reduced frequency for pagination)
     const interval = setInterval(() => {
       fetchAlerts();
-    }, 10000);
+    }, 30000);
 
     return () => clearInterval(interval);
   }, [fetchRules, fetchAlerts]);
+  
+  const handlePageChange = (newPage: number) => setPage(newPage);
+  const handleLimitChange = (newLimit: number) => { setLimit(newLimit); setPage(1); };
 
   const handleSubmitRule = async () => {
     try {
@@ -521,6 +547,19 @@ export default function AlertsPage() {
                     ))}
                   </div>
                 </ScrollArea>
+                
+                {/* Pagination */}
+                {totalPages > 0 && (
+                  <DataTablePagination
+                    page={page}
+                    totalPages={totalPages}
+                    total={total}
+                    limit={limit}
+                    onPageChange={handlePageChange}
+                    onLimitChange={handleLimitChange}
+                    className="mt-4"
+                  />
+                )}
               )}
             </CardContent>
           </Card>

@@ -6,7 +6,7 @@ import { createAuditLog, getClientIP } from '@/lib/audit';
 import { checkPermission } from '@/lib/rbac';
 import { RoutingPolicyType } from '@prisma/client';
 
-// GET /api/routing-policies - List routing policies
+// GET /api/routing-policies - List routing policies with pagination
 export async function GET(request: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
@@ -16,8 +16,11 @@ export async function GET(request: NextRequest) {
 
     const { searchParams } = new URL(request.url);
     const orgId = searchParams.get('orgId');
+    const page = Math.max(1, parseInt(searchParams.get('page') || '1', 10));
+    const limit = Math.min(100, Math.max(1, parseInt(searchParams.get('limit') || '20', 10)));
     const type = searchParams.get('type') as RoutingPolicyType | null;
     const isActive = searchParams.get('isActive');
+    const search = searchParams.get('search') || '';
 
     if (!orgId) {
       return NextResponse.json({ error: 'Organization ID required' }, { status: 400 });
@@ -35,21 +38,40 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Access denied' }, { status: 403 });
     }
 
-    const policies = await prisma.routingPolicy.findMany({
-      where: {
-        orgId,
-        ...(type && { type }),
-        ...(isActive !== null && { isActive: isActive === 'true' })
-      },
-      include: {
-        cluster: {
-          select: { id: true, name: true, strategy: true }
-        }
-      },
-      orderBy: [{ priority: 'asc' }, { name: 'asc' }]
-    });
+    const where: Record<string, unknown> = { orgId };
+    if (type) where.type = type;
+    if (isActive !== null) where.isActive = isActive === 'true';
+    if (search) {
+      where.OR = [
+        { name: { contains: search, mode: 'insensitive' } },
+        { description: { contains: search, mode: 'insensitive' } },
+      ];
+    }
 
-    return NextResponse.json({ policies });
+    const [policies, total] = await Promise.all([
+      prisma.routingPolicy.findMany({
+        where,
+        include: {
+          cluster: {
+            select: { id: true, name: true, strategy: true }
+          }
+        },
+        orderBy: [{ priority: 'asc' }, { name: 'asc' }],
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      prisma.routingPolicy.count({ where }),
+    ]);
+
+    return NextResponse.json({
+      policies,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
   } catch (error) {
     console.error('Error fetching routing policies:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
