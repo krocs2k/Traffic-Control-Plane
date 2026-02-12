@@ -142,7 +142,9 @@ export default function BackendsPage() {
   const [loading, setLoading] = useState(true);
   const [expandedClusters, setExpandedClusters] = useState<Set<string>>(new Set());
   const [selectedClusters, setSelectedClusters] = useState<Set<string>>(new Set());
+  const [selectedBackends, setSelectedBackends] = useState<Set<string>>(new Set());
   const [bulkDeleteDialogOpen, setBulkDeleteDialogOpen] = useState(false);
+  const [bulkDeleteBackendsDialogOpen, setBulkDeleteBackendsDialogOpen] = useState(false);
   
   // Dialog states
   const [clusterDialogOpen, setClusterDialogOpen] = useState(false);
@@ -393,6 +395,57 @@ export default function BackendsPage() {
     }
   };
 
+  // Backend selection functions
+  const toggleBackendSelection = (backendId: string) => {
+    setSelectedBackends(prev => {
+      const next = new Set(prev);
+      if (next.has(backendId)) {
+        next.delete(backendId);
+      } else {
+        next.add(backendId);
+      }
+      return next;
+    });
+  };
+
+  const toggleSelectAllBackendsInCluster = (cluster: BackendCluster) => {
+    const clusterBackendIds = cluster.backends.map(b => b.id);
+    const allSelected = clusterBackendIds.every(id => selectedBackends.has(id));
+    
+    setSelectedBackends(prev => {
+      const next = new Set(prev);
+      if (allSelected) {
+        clusterBackendIds.forEach(id => next.delete(id));
+      } else {
+        clusterBackendIds.forEach(id => next.add(id));
+      }
+      return next;
+    });
+  };
+
+  const handleBulkDeleteBackends = async () => {
+    if (selectedBackends.size === 0) return;
+    try {
+      const res = await fetch('/api/backends', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ backendIds: Array.from(selectedBackends) }),
+      });
+      if (!res.ok) throw new Error('Failed to delete backends');
+      toast.success(`Deleted ${selectedBackends.size} backend(s) successfully`);
+      setBulkDeleteBackendsDialogOpen(false);
+      setSelectedBackends(new Set());
+      fetchClusters();
+    } catch (error) {
+      console.error('Error bulk deleting backends:', error);
+      toast.error('Failed to delete backends');
+    }
+  };
+
+  const getSelectedBackendsCount = (cluster: BackendCluster) => {
+    return cluster.backends.filter(b => selectedBackends.has(b.id)).length;
+  };
+
   if (!orgId) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -421,7 +474,13 @@ export default function BackendsPage() {
               {selectedClusters.size > 0 && (
                 <Button variant="destructive" size="sm" onClick={() => setBulkDeleteDialogOpen(true)}>
                   <Trash2 className="h-4 w-4 mr-2" />
-                  Delete ({selectedClusters.size})
+                  Delete Clusters ({selectedClusters.size})
+                </Button>
+              )}
+              {selectedBackends.size > 0 && (
+                <Button variant="destructive" size="sm" onClick={() => setBulkDeleteBackendsDialogOpen(true)}>
+                  <Trash2 className="h-4 w-4 mr-2" />
+                  Delete Backends ({selectedBackends.size})
                 </Button>
               )}
             </>
@@ -623,70 +682,101 @@ export default function BackendsPage() {
                         )}
                       </div>
                     ) : (
-                      <div className="grid gap-3">
-                        {cluster.backends.map(backend => (
-                          <div
-                            key={backend.id}
-                            className="flex items-center justify-between p-3 rounded-lg border bg-card hover:bg-accent/50 transition-colors"
-                          >
-                            <div className="flex items-center gap-4">
-                              {STATUS_ICONS[backend.status as keyof typeof STATUS_ICONS]}
-                              <div>
-                                <div className="font-medium flex items-center gap-2">
-                                  {backend.name}
-                                  <Badge
-                                    variant="outline"
-                                    className={STATUS_BADGES[backend.status as keyof typeof STATUS_BADGES] || ''}
-                                  >
-                                    {backend.status}
-                                  </Badge>
-                                </div>
-                                <div className="text-sm text-muted-foreground">
-                                  {backend.protocol}://{backend.host}:{backend.port}
-                                </div>
-                              </div>
-                            </div>
-                            <div className="flex items-center gap-4">
-                              <div className="text-right text-sm">
-                                <div className="text-muted-foreground">Weight</div>
-                                <div className="font-medium">{backend.weight}</div>
-                              </div>
-                              <div className="text-right text-sm">
-                                <div className="text-muted-foreground">Connections</div>
-                                <div className="font-medium">
-                                  {backend.currentConnections}
-                                  {backend.maxConnections && ` / ${backend.maxConnections}`}
-                                </div>
-                              </div>
-                              {canManage && (
-                                <DropdownMenu>
-                                  <DropdownMenuTrigger asChild>
-                                    <Button variant="ghost" size="icon">
-                                      <MoreVertical className="h-4 w-4" />
-                                    </Button>
-                                  </DropdownMenuTrigger>
-                                  <DropdownMenuContent align="end">
-                                    <DropdownMenuItem onClick={() => openBackendDialog(cluster.id, backend)}>
-                                      <Pencil className="h-4 w-4 mr-2" />
-                                      Edit
-                                    </DropdownMenuItem>
-                                    <DropdownMenuSeparator />
-                                    <DropdownMenuItem
-                                      className="text-red-600"
-                                      onClick={() => {
-                                        setDeleteTarget({ type: 'backend', id: backend.id, name: backend.name });
-                                        setDeleteDialogOpen(true);
-                                      }}
-                                    >
-                                      <Trash2 className="h-4 w-4 mr-2" />
-                                      Delete
-                                    </DropdownMenuItem>
-                                  </DropdownMenuContent>
-                                </DropdownMenu>
+                      <div className="space-y-3">
+                        {canManage && cluster.backends.length > 0 && (
+                          <div className="flex items-center justify-between">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => toggleSelectAllBackendsInCluster(cluster)}
+                              className="text-muted-foreground"
+                            >
+                              {cluster.backends.every(b => selectedBackends.has(b.id)) ? (
+                                <><CheckSquare className="h-4 w-4 mr-2" />Deselect All Backends</>
+                              ) : (
+                                <><Square className="h-4 w-4 mr-2" />Select All Backends</>
                               )}
-                            </div>
+                            </Button>
+                            {getSelectedBackendsCount(cluster) > 0 && (
+                              <span className="text-sm text-muted-foreground">
+                                {getSelectedBackendsCount(cluster)} of {cluster.backends.length} selected
+                              </span>
+                            )}
                           </div>
-                        ))}
+                        )}
+                        <div className="grid gap-3">
+                          {cluster.backends.map(backend => (
+                            <div
+                              key={backend.id}
+                              className={`flex items-center justify-between p-3 rounded-lg border bg-card hover:bg-accent/50 transition-colors ${
+                                selectedBackends.has(backend.id) ? 'ring-2 ring-primary' : ''
+                              }`}
+                            >
+                              <div className="flex items-center gap-4">
+                                {canManage && (
+                                  <Checkbox
+                                    checked={selectedBackends.has(backend.id)}
+                                    onCheckedChange={() => toggleBackendSelection(backend.id)}
+                                  />
+                                )}
+                                {STATUS_ICONS[backend.status as keyof typeof STATUS_ICONS]}
+                                <div>
+                                  <div className="font-medium flex items-center gap-2">
+                                    {backend.name}
+                                    <Badge
+                                      variant="outline"
+                                      className={STATUS_BADGES[backend.status as keyof typeof STATUS_BADGES] || ''}
+                                    >
+                                      {backend.status}
+                                    </Badge>
+                                  </div>
+                                  <div className="text-sm text-muted-foreground">
+                                    {backend.protocol}://{backend.host}:{backend.port}
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-4">
+                                <div className="text-right text-sm">
+                                  <div className="text-muted-foreground">Weight</div>
+                                  <div className="font-medium">{backend.weight}</div>
+                                </div>
+                                <div className="text-right text-sm">
+                                  <div className="text-muted-foreground">Connections</div>
+                                  <div className="font-medium">
+                                    {backend.currentConnections}
+                                    {backend.maxConnections && ` / ${backend.maxConnections}`}
+                                  </div>
+                                </div>
+                                {canManage && (
+                                  <DropdownMenu>
+                                    <DropdownMenuTrigger asChild>
+                                      <Button variant="ghost" size="icon">
+                                        <MoreVertical className="h-4 w-4" />
+                                      </Button>
+                                    </DropdownMenuTrigger>
+                                    <DropdownMenuContent align="end">
+                                      <DropdownMenuItem onClick={() => openBackendDialog(cluster.id, backend)}>
+                                        <Pencil className="h-4 w-4 mr-2" />
+                                        Edit
+                                      </DropdownMenuItem>
+                                      <DropdownMenuSeparator />
+                                      <DropdownMenuItem
+                                        className="text-red-600"
+                                        onClick={() => {
+                                          setDeleteTarget({ type: 'backend', id: backend.id, name: backend.name });
+                                          setDeleteDialogOpen(true);
+                                        }}
+                                      >
+                                        <Trash2 className="h-4 w-4 mr-2" />
+                                        Delete
+                                      </DropdownMenuItem>
+                                    </DropdownMenuContent>
+                                  </DropdownMenu>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     )}
                   </CardContent>
@@ -878,7 +968,7 @@ export default function BackendsPage() {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Bulk Delete Dialog */}
+      {/* Bulk Delete Clusters Dialog */}
       <AlertDialog open={bulkDeleteDialogOpen} onOpenChange={setBulkDeleteDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -892,6 +982,24 @@ export default function BackendsPage() {
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={handleBulkDelete} className="bg-red-600 hover:bg-red-700">
               Delete {selectedClusters.size} Cluster{selectedClusters.size > 1 ? 's' : ''}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Bulk Delete Backends Dialog */}
+      <AlertDialog open={bulkDeleteBackendsDialogOpen} onOpenChange={setBulkDeleteBackendsDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete {selectedBackends.size} backend{selectedBackends.size > 1 ? 's' : ''}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete the selected backends? This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleBulkDeleteBackends} className="bg-red-600 hover:bg-red-700">
+              Delete {selectedBackends.size} Backend{selectedBackends.size > 1 ? 's' : ''}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
