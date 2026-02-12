@@ -11,7 +11,7 @@ This guide documents all modifications needed to deploy the Traffic Control Plan
 3. [Dockerignore Setup](#3-dockerignore-setup)
 4. [TypeScript Configuration](#4-typescript-configuration)
 5. [Dockerfile Requirements](#5-dockerfile-requirements)
-6. [Next.js Standalone Output](#6-nextjs-standalone-output)
+6. [Next.js Deployment Strategy](#6-nextjs-deployment-strategy)
 7. [Local File Storage](#7-local-file-storage)
 8. [Health Check Endpoint](#8-health-check-endpoint)
 9. [Prisma CLI in Runner Stage](#9-prisma-cli-in-runner-stage)
@@ -101,45 +101,50 @@ nextjs_space/package-lock.json
 # Build outputs
 .next
 nextjs_space/.next
-.build
-nextjs_space/.build
 out
-build
-dist
+nextjs_space/out
 
-# Testing
-coverage
-
-# Misc
-.DS_Store
-*.pem
-
-# Debug
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# Local env files
+# Environment files (provided at runtime)
 .env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-
-# IDE
-.vscode
-.idea
+nextjs_space/.env
+.env.*
+!.env.example
 
 # Git
 .git
 .gitignore
 
-# TypeScript cache
-tsconfig.tsbuildinfo
-nextjs_space/tsconfig.tsbuildinfo
-```
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
 
-> ⚠️ **CRITICAL:** The `.dockerignore` must be at the PROJECT ROOT (same level as `Dockerfile`), NOT inside `nextjs_space/`!
+# Documentation
+*.md
+!README.md
+
+# Miscellaneous
+.DS_Store
+Thumbs.db
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Deployment files for reference (not needed in container)
+DEEP-AGENT-*.md
+DEEP-AGENT-*.pdf
+docker-compose*.yml
+
+# Test and coverage
+coverage
+.nyc_output
+
+# Abacus.AI specific
+.abacus.donotdelete
+opt/
+```
 
 ---
 
@@ -147,185 +152,158 @@ nextjs_space/tsconfig.tsbuildinfo
 
 **File:** `nextjs_space/tsconfig.json`
 
-Add explicit type control to prevent "Cannot find type definition" errors:
-
-```json
-{
-  "compilerOptions": {
-    "typeRoots": ["./node_modules/@types"],
-    "types": ["node", "react", "react-dom"]
-  }
-}
-```
-
-### TypeScript Strict Mode
-
-Docker builds use strict TypeScript. Fix all implicit any errors:
-
-```typescript
-// Before (error in Docker):
-items.forEach(item => { ... })
-
-// After (fixed):
-items.forEach((item: typeof items[number]) => { ... })
-```
+No special changes needed. Default Next.js configuration works.
 
 ---
 
-## 5. Dockerfile Requirements (Restructured Build)
+## 5. Dockerfile Requirements (v11)
 
 **File:** `Dockerfile` (at **PROJECT ROOT**, not in nextjs_space/)
 
-**STATUS: ✅ RESTRUCTURED** - Fixes overlay2 filesystem conflicts
+**STATUS: ✅ v11** - Compatible with deployment platforms that run `node server.js`
 
 ### Key Architecture Changes
 
-The Dockerfile has been completely restructured to avoid module resolution issues:
+The Dockerfile has been restructured to:
+1. Use separate working directories (Builder: `/build`, Runner: `/srv/app`)
+2. Copy full `node_modules` (not standalone traced deps)
+3. Include a `server.js` that **spawns** `next start` (for platform compatibility)
+4. Use `next.config.docker.js` to prevent standalone mode
 
-| Stage | Working Directory | Purpose |
-|----|----|----|----|
-| deps | `/build` | Install dependencies |
-| builder | `/build` | Build the Next.js app |
-| runner | `/srv/app` | Fresh path, runs `next start` |
+### Why server.js (v11 Approach)
 
-### Why This Matters
+Many deployment platforms (Coolify, Dokploy, Railway) are configured to run `node server.js` by default. Instead of fighting this:
 
-We originally attempted to use Next.js's `output: 'standalone'` mode but encountered persistent `Cannot find module 'next'` errors. The standalone `server.js` has hardcoded module resolution paths that don't work reliably when copying between Docker stages. The new approach:
+- We provide a `server.js` that **doesn't require('next')** directly
+- It spawns `node ./node_modules/next/dist/bin/next start` as a child process
+- This avoids module resolution issues while satisfying the platform's expectations
 
-1. **Uses separate working directories** - Builder uses `/build`, runner uses `/srv/app`
-2. **Full node_modules copy** - Copies the complete `node_modules` directory (not traced deps)
-3. **Uses `next start`** - Standard Next.js production server instead of standalone's `node server.js`
-4. **No standalone output** - `next.config.js` does NOT include `output: 'standalone'`
-
-### Complete Dockerfile Template
-
-> ⚠️ **UPDATE:** We no longer use `output: 'standalone'` due to persistent module resolution issues. Instead, we use `next start` with the full `node_modules` directory. This results in a larger image (~500MB vs ~150MB) but is much more reliable.
+### Complete Dockerfile Template (v11)
 
 ```dockerfile
 FROM node:20-alpine AS base
 
-# Cache bust: 2026-02-11-v3 - CRITICAL: Remove server.js, use next start only
-# ====
-# Stage 1: Dependencies
-# ====
+# ============================================
+# v11 - 2026-02-12 - WORKING SERVER.JS
+# ============================================
+
 FROM base AS deps
 RUN apk add --no-cache libc6-compat wget openssl
 WORKDIR /build
-
-# Copy package.json (note: nextjs_space/ prefix)
 COPY nextjs_space/package.json ./
-
-# Generate fresh yarn.lock (don't copy from host - it's symlinked)
 RUN yarn install --frozen-lockfile || yarn install
 
-# ====
-# Stage 2: Builder
-# ====
 FROM base AS builder
 RUN apk add --no-cache wget openssl
 WORKDIR /build
-
-# Copy dependencies from deps stage
 COPY --from=deps /build/node_modules ./node_modules
 COPY nextjs_space/ ./
 
-# Generate Prisma client
+# Use clean next.config.js (no standalone)
+RUN cp next.config.docker.js next.config.js && \
+    echo "=== next.config.js (v11) ===" && cat next.config.js
+
 RUN npx prisma generate
 
-# Pre-compile seed script (tsx fails silently in Docker)
 RUN npx tsc scripts/seed.ts --outDir scripts/compiled --esModuleInterop \
     --module commonjs --target es2020 --skipLibCheck --types node \
     || echo "Using pre-compiled seed.js"
 
-# Clean any previous build artifacts to prevent standalone remnants
 RUN rm -rf .next
 
-# Create a clean next.config.js for Docker (NO standalone - use next start instead)
-RUN cat > next.config.js << 'NEXTCONFIG'
-/** @type {import('next').NextConfig} */
-const nextConfig = {
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
-  typescript: {
-    ignoreBuildErrors: false,
-  },
-  images: { unoptimized: true },
-};
-module.exports = nextConfig;
-NEXTCONFIG
-
-# Verify next.config.js has NO standalone
-RUN echo "=== next.config.js ===" && cat next.config.js && \
-    echo "=== Verifying no standalone in config ===" && \
-    ! grep -q "standalone" next.config.js && echo "✓ No standalone in config"
-
-# Build the application
 ENV NEXT_TELEMETRY_DISABLED=1
+ENV NEXT_OUTPUT_MODE=""
 RUN yarn build
 
-# Verify build output exists and NO standalone folder
-RUN ls -la .next/ && \
-    echo "=== Checking for standalone (should NOT exist) ===" && \
-    ! test -d .next/standalone && echo "✓ No standalone folder - correct!" || \
-    (echo "ERROR: standalone folder exists!" && rm -rf .next/standalone && echo "Removed it")
+# Verify NO standalone was created
+RUN ! test -d .next/standalone || (echo "Removing standalone" && rm -rf .next/standalone)
 
-# ====
-# Stage 3: Runner (Fresh path - /srv/app)
-# ====
+# ============================================
+# PRODUCTION IMAGE v11
+# ============================================
 FROM base AS runner
 RUN apk add --no-cache wget openssl bash
 
 WORKDIR /srv/app
 
-# Create non-root user
 RUN addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 nextjs
 
-# Set environment
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
-ENV PATH="/srv/app/node_modules/.bin:$PATH"
 
-# Create uploads directory for local file storage
 RUN mkdir -p ./uploads/public ./uploads/private && \
     chown -R nextjs:nodejs ./uploads
 
-# ====
-# Copy full app with node_modules (no standalone)
-# ====
-# We use `next start` instead of standalone's `node server.js`
-# This is more reliable but results in a larger image
-
+# Copy from builder
 COPY --from=builder --chown=nextjs:nodejs /build/package.json ./
 COPY --from=builder --chown=nextjs:nodejs /build/next.config.js ./
 COPY --from=builder --chown=nextjs:nodejs /build/node_modules ./node_modules
 COPY --from=builder --chown=nextjs:nodejs /build/.next ./.next
 COPY --from=builder --chown=nextjs:nodejs /build/public ./public
 COPY --from=builder --chown=nextjs:nodejs /build/prisma ./prisma
-
-# CRITICAL: Remove any server.js if it exists (from cached standalone builds)
-RUN rm -f ./server.js && \
-    rm -rf ./.next/standalone
-
-# Verify structure - NO server.js should exist
-RUN echo "=== Final structure ===" && ls -la ./ && \
-    echo "=== .next contents ===" && ls -la ./.next/ && \
-    echo "=== Verifying next module ===" && ls -la ./node_modules/next/ && \
-    echo "=== Verifying NO server.js ===" && \
-    ! test -f ./server.js && echo "✓ No server.js - will use next start" || \
-    (echo "ERROR: server.js exists!" && exit 1)
-
-# Copy compiled seed script
 COPY --from=builder --chown=nextjs:nodejs /build/scripts/compiled ./scripts
 
-# Copy entrypoint script (note: nextjs_space/ prefix)
-COPY nextjs_space/docker-entrypoint.sh ./
-RUN chmod +x docker-entrypoint.sh
+# Copy server.js that spawns next start (works with deployment platforms)
+COPY --from=builder --chown=nextjs:nodejs /build/server.js ./server.js
 
-# Switch to non-root user
+# Verify
+RUN echo "=== v11 VERIFICATION ===" && \
+    ls -la ./server.js && \
+    ls -la ./node_modules/next/ > /dev/null && \
+    echo "OK: server.js and next module exist"
+
+# Create startup script (embedded in Dockerfile)
+RUN cat > /srv/app/start.sh << 'STARTSCRIPT'
+#!/bin/bash
+set -e
+
+echo ""
+echo "========================================"
+echo "  TCP v11 - $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "========================================"
+echo ""
+
+# Wait for database
+echo "Connecting to database..."
+until node -e "
+const { PrismaClient } = require('@prisma/client');
+const p = new PrismaClient();
+p.\$connect().then(() => process.exit(0)).catch(() => process.exit(1));
+" 2>/dev/null; do
+  sleep 2
+done
+echo "OK: Database connected"
+
+# Sync schema
+npx prisma db push --skip-generate --accept-data-loss 2>&1 || \
+  npx prisma db push --skip-generate 2>&1 || true
+echo "OK: Schema synced"
+
+# Seed if needed
+NEEDS_SEED=$(node -e "
+const { PrismaClient } = require('@prisma/client');
+const p = new PrismaClient();
+p.user.count().then(c => console.log(c === 0 ? 'true' : 'false')).catch(() => console.log('true'));
+" 2>/dev/null || echo "true")
+
+if [ "$NEEDS_SEED" = "true" ]; then
+  echo "Seeding database..."
+  node scripts/seed.js
+else
+  echo "Database has data, syncing..."
+  node scripts/seed.js || true
+fi
+
+echo ""
+echo "Starting Next.js..."
+exec node server.js
+STARTSCRIPT
+
+RUN chmod +x /srv/app/start.sh
+
 USER nextjs
 
 EXPOSE 3000
@@ -333,69 +311,86 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1
 
-ENTRYPOINT ["./docker-entrypoint.sh"]
+CMD ["/srv/app/start.sh"]
 ```
-
-### Key Points Summary
-
-| Issue | Solution |
-|----|----|
-| overlay2 symlink conflict | Use `/srv/app` as fresh runner path |
-| `Cannot find module 'next'` | **Don't use standalone** - use `next start` with full node_modules |
-| Module resolution issues | Copy full node_modules from builder, use `npx next start` |
-| Missing Prisma CLI | Full node_modules includes all CLI tools |
-| tsx silent failures | Pre-compile seed.ts in builder stage |
 
 ---
 
 ## 6. Next.js Deployment Strategy
 
-**STATUS: ✅ USING `next start` (NOT STANDALONE)**
+**STATUS: ✅ v11 - Using server.js wrapper with `next start`**
 
-### Why We Don't Use Standalone
+### The Problem
 
-The `output: 'standalone'` option in Next.js creates a minimal deployment bundle with traced dependencies. However, we encountered persistent `Cannot find module 'next'` errors due to:
+Many deployment platforms (Coolify, Dokploy, etc.) have a hardcoded start command that runs `node server.js`. Previous attempts to:
+- Remove server.js and use `next start` directly
+- Embed the entrypoint in the Dockerfile
+- Clear Docker cache
 
-1. **Module resolution conflicts** - The standalone `server.js` has hardcoded module paths that don't work when copying between Docker stages
-2. **Symlink issues** - Docker's overlay2 filesystem doesn't handle symlinks in node_modules well
-3. **Incomplete traced dependencies** - Next.js's dependency tracing sometimes misses required modules
+...all failed because the platform **always** runs `node server.js` regardless of Dockerfile CMD.
 
-### The Solution: Use `next start` with Full node_modules
+### The Solution: A Working server.js
 
-Instead of standalone, we use the standard `next start` command with the complete `node_modules` directory:
+Instead of fighting the platform, we provide a `server.js` that works:
 
-```dockerfile
-# Create a clean next.config.js for Docker (NO standalone)
-RUN cat > next.config.js << 'NEXTCONFIG'
+**File:** `nextjs_space/server.js`
+
+```javascript
+#!/usr/bin/env node
+// server.js v11 - Works even when deployment platform runs "node server.js"
+const { spawn } = require('child_process');
+const path = require('path');
+
+console.log('');
+console.log('========================================');
+console.log('  TCP server.js v11 - 2026-02-12');
+console.log('========================================');
+console.log('');
+
+const nextBin = path.join(__dirname, 'node_modules', 'next', 'dist', 'bin', 'next');
+
+console.log('Starting Next.js via:', nextBin);
+
+const child = spawn('node', [nextBin, 'start', '-p', process.env.PORT || '3000', '-H', '0.0.0.0'], {
+  stdio: 'inherit',
+  cwd: __dirname
+});
+
+child.on('error', (err) => {
+  console.error('Failed to start:', err);
+  process.exit(1);
+});
+
+child.on('exit', (code) => {
+  process.exit(code || 0);
+});
+```
+
+### Why This Works
+
+| Approach | Problem | v11 Solution |
+|----------|---------|---------------|
+| `require('next')` | Module resolution fails in Docker | Don't require - use `spawn()` |
+| Standalone `server.js` | Hardcoded paths don't work | Not using standalone mode |
+| `npx next start` | Platform ignores Dockerfile CMD | Platform runs our server.js which spawns next |
+
+### next.config.docker.js
+
+**File:** `nextjs_space/next.config.docker.js`
+
+A clean config file that prevents standalone mode:
+
+```javascript
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
-  typescript: {
-    ignoreBuildErrors: false,
-  },
+  eslint: { ignoreDuringBuilds: true },
+  typescript: { ignoreBuildErrors: false },
   images: { unoptimized: true },
 };
 module.exports = nextConfig;
-NEXTCONFIG
 ```
 
-**Entrypoint uses:**
-```bash
-exec npx next start -p 3000 -H 0.0.0.0
-```
-
-### Trade-offs
-
-| Aspect | Standalone | next start (Current) |
-|--------|-----------|---------------------|
-| Image Size | ~150MB | ~500MB |
-| Reliability | ❌ Module resolution issues | ✅ Works reliably |
-| Complexity | High (traced deps) | Low (standard deployment) |
-| Startup Time | Faster | Slightly slower |
-
-**We chose reliability over image size.** The larger image is acceptable for a self-hosted VPS deployment.
+The Dockerfile copies this over `next.config.js` during build to ensure no standalone mode.
 
 ---
 
@@ -464,29 +459,12 @@ export const dynamic = 'force-static';
 
 ## 9. Prisma CLI in Runner Stage
 
-The standalone output doesn't include CLI binaries. To run prisma commands at container startup (`db push`, `seed`):
+With full node_modules copy, Prisma CLI is automatically available.
 
-### A) Add PATH to Dockerfile runner stage:
+### Verify in Dockerfile:
 ```dockerfile
 ENV PATH="/srv/app/node_modules/.bin:$PATH"
 ```
-
-### B) Pre-create directories, then copy from builder:
-```dockerfile
-# Create directories BEFORE copying (avoids symlink conflicts)
-RUN mkdir -p ./node_modules/.bin \
-             ./node_modules/.prisma \
-             ./node_modules/@prisma \
-             ./node_modules/prisma
-
-# Copy from builder (note: /build path in builder stage)
-COPY --from=builder /build/node_modules/.bin ./node_modules/.bin
-COPY --from=builder /build/node_modules/.prisma ./node_modules/.prisma
-COPY --from=builder /build/node_modules/@prisma ./node_modules/@prisma
-COPY --from=builder /build/node_modules/prisma ./node_modules/prisma
-```
-
-> ⚠️ Without these, you'll see `sh: prisma: not found` at container startup!
 
 ---
 
@@ -513,12 +491,10 @@ git add scripts/compiled/seed.js
 
 #### C) In runner stage:
 ```dockerfile
-# Note: /build path in builder stage
 COPY --from=builder /build/scripts/compiled ./scripts
-COPY --from=builder /build/node_modules/bcryptjs ./node_modules/bcryptjs
 ```
 
-#### D) In docker-entrypoint.sh:
+#### D) In startup script:
 ```bash
 node scripts/seed.js  # NOT prisma db seed
 ```
@@ -537,91 +513,44 @@ const admin = await prisma.user.upsert({
 
 ---
 
-## 11. Docker Entrypoint
+## 11. Docker Entrypoint / Startup
 
-**File:** `nextjs_space/docker-entrypoint.sh`
+**STATUS: ✅ v11** - Startup script embedded in Dockerfile
 
-**STATUS: ✅ UPDATED (v4)** - Now includes runtime server.js removal to handle cached Docker images
+The startup logic is now embedded directly in the Dockerfile as `start.sh`. This ensures the correct startup process is always used.
 
-```bash
-#!/bin/sh
-set -e
-echo "=== ENTRYPOINT v4 - 2026-02-12 ==="
-echo "Starting application..."
+### What start.sh Does
 
-# CRITICAL: Remove server.js if it exists (from cached standalone builds)
-if [ -f "/srv/app/server.js" ]; then
-  echo "WARNING: Found cached server.js - removing it!"
-  rm -f /srv/app/server.js
-fi
-if [ -d "/srv/app/.next/standalone" ]; then
-  echo "WARNING: Found cached standalone folder - removing it!"
-  rm -rf /srv/app/.next/standalone
-fi
+1. **Prints version banner** - `TCP v11 - <timestamp>` confirms correct image
+2. **Waits for database** - Retries connection until PostgreSQL is ready
+3. **Syncs schema** - Runs `prisma db push` to apply any schema changes
+4. **Seeds if needed** - Checks user count, runs seed.js if empty
+5. **Starts Next.js** - Runs `node server.js` which spawns `next start`
 
-# Wait for database to be ready
-echo "Waiting for database connection..."
-until node -e "
-const { PrismaClient } = require('@prisma/client');
-const p = new PrismaClient();
-p.\$connect().then(() => process.exit(0)).catch(() => process.exit(1));
-" 2>/dev/null; do
-  echo "Database not ready, waiting..."
-  sleep 2
-done
-echo "Database connected!"
+### Expected Startup Sequence
 
-# ALWAYS run database migrations to sync schema changes
-echo "Running database migrations..."
-npx prisma db push --skip-generate --accept-data-loss 2>&1 || {
-  echo "Warning: prisma db push failed, attempting without --accept-data-loss..."
-  npx prisma db push --skip-generate 2>&1 || echo "Migration skipped (may already be in sync)"
-}
-echo "Database schema synchronized!"
-
-# Check if seeding is needed
-echo "Checking database state..."
-NEEDS_SEED=$(node -e "
-const { PrismaClient } = require('@prisma/client');
-const p = new PrismaClient();
-p.user.count().then(c => console.log(c === 0 ? 'true' : 'false')).catch(() => console.log('true'));
-" 2>/dev/null || echo "true")
-
-if [ "$NEEDS_SEED" = "true" ]; then
-  echo "Running seed script..."
-  node scripts/seed.js
-else
-  echo "Database has users, syncing passwords..."
-  node scripts/seed.js || echo "Seed sync completed"
-fi
-
-echo "Starting Next.js server..."
-
-# Final check - absolutely ensure no server.js
-if [ -f "/srv/app/server.js" ]; then
-  echo "FATAL: server.js still exists after cleanup! Removing..."
-  rm -f /srv/app/server.js
-fi
-
-echo "Contents of /srv/app:"
-ls -la /srv/app/
-
-echo "Using next start (NOT node server.js)..."
-exec node ./node_modules/next/dist/bin/next start -p 3000 -H 0.0.0.0
 ```
+========================================
+  TCP v11 - 2026-02-12T03:00:00Z
+========================================
 
-### Key Features of v4 Entrypoint
+Connecting to database...
+OK: Database connected
+OK: Schema synced
+Seeding database...
+... (seed output) ...
 
-| Feature | Purpose |
-|---------|---------|
-| **Version identifier** | `=== ENTRYPOINT v4 ===` in logs confirms new code is running |
-| **Runtime server.js removal** | Deletes server.js at startup even if cached image has it |
-| **Standalone folder cleanup** | Removes `.next/standalone` if it exists |
-| **Final check before start** | Double-checks no server.js remains |
-| **Directory listing** | Shows `/srv/app/` contents for debugging |
-| **Direct node path** | Uses `node ./node_modules/next/dist/bin/next` instead of `npx` |
+Starting Next.js...
 
-> ⚠️ **Note:** The runtime cleanup handles the case where Docker/Coolify uses a cached image from a previous standalone build. Even if the Dockerfile changes aren't picked up, the entrypoint will fix it at runtime.
+========================================
+  TCP server.js v11 - 2026-02-12
+========================================
+
+Starting Next.js via: /srv/app/node_modules/next/dist/bin/next
+  ▲ Next.js 14.x.x
+  - Local:        http://0.0.0.0:3000
+ ✓ Ready in Xs
+```
 
 ---
 
@@ -735,41 +664,26 @@ Before every git push, verify:
 
 ### File Locations
 - [ ] `Dockerfile` is at PROJECT ROOT (not in nextjs_space/)
-- [ ] `.dockerignore` is at PROJECT ROOT (not in nextjs_space/)
+- [ ] `server.js` exists in `nextjs_space/` directory
+- [ ] `next.config.docker.js` exists in `nextjs_space/` directory
 
-### Next.js Config (handled by Dockerfile)
-- [ ] Dockerfile creates clean `next.config.js` **WITHOUT** `output: 'standalone'`
-- [ ] No `experimental.outputFileTracingRoot` in Docker build
+### server.js
+- [ ] Uses `spawn()` to run next start (NOT `require('next')`)
+- [ ] Logs version banner: `TCP server.js v11`
 
-### Dockerfile (Using `next start`)
+### Dockerfile (v11)
 - [ ] All `COPY` commands use `nextjs_space/` prefix for source files
 - [ ] Builder stage uses `WORKDIR /build`
-- [ ] Runner stage uses `WORKDIR /srv/app` (NOT /app)
-- [ ] Has verification step: `RUN ls -la .next/`
-- [ ] `ENV PATH="/srv/app/node_modules/.bin:$PATH"` set in runner
-- [ ] Copy full node_modules: `COPY --from=builder /build/node_modules ./node_modules`
-- [ ] Copy .next build: `COPY --from=builder /build/.next ./.next`
-- [ ] Verification step: `RUN ls -la ./node_modules/next/`
-- [ ] Creates uploads directories
-- [ ] Installs `wget`, `openssl`, and `bash` in runner stage
-- [ ] Entrypoint uses: `COPY nextjs_space/docker-entrypoint.sh ./`
-
-### Entrypoint
-- [ ] Uses `npx next start -p 3000 -H 0.0.0.0` (NOT `node server.js`)
-
-### Docker Cache (Important After Major Changes)
-- [ ] If switching from standalone to `next start`, force a full rebuild (see Section 15.1)
-- [ ] Update cache bust comment in Dockerfile if needed: `# Cache bust: YYYY-MM-DD-vX`
+- [ ] Runner stage uses `WORKDIR /srv/app`
+- [ ] Copies `next.config.docker.js` over `next.config.js`
+- [ ] Sets `ENV NEXT_OUTPUT_MODE=""`
+- [ ] Copies `server.js` to runner
+- [ ] Embeds `start.sh` inline
+- [ ] `CMD ["/srv/app/start.sh"]`
 
 ### Seeding
-- [ ] Pre-compiled `scripts/compiled/seed.js` exists and is committed
+- [ ] Pre-compiled `scripts/compiled/seed.js` exists
 - [ ] Seed script upsert includes password in update clause
-- [ ] `docker-entrypoint.sh` runs `npx prisma db push` BEFORE seed check
-- [ ] `docker-entrypoint.sh` uses `node scripts/seed.js` (not prisma db seed)
-
-### Docker Compose
-- [ ] `docker-compose.yml` uses `/srv/app/uploads` volume path
-- [ ] No Abacus AI specific references remain in code
 
 ---
 
@@ -777,112 +691,90 @@ Before every git push, verify:
 
 | Error | Fix |
 |-------|-----|
+| **`Cannot find module 'next'` from `server.js`** | Use v11 server.js with `spawn()` instead of `require()` |
 | **overlay2 filesystem conflict** | Use `/srv/app` as runner WORKDIR, not `/app` |
-| **`Cannot find module 'next'` with `/srv/app/server.js`** | **Docker cache issue** - see Section 15.1 below |
-| **node_modules symlink issues** | Copy full node_modules from builder (not traced deps from standalone) |
-| `sh: prisma: not found` | Set `ENV PATH="/srv/app/node_modules/.bin:$PATH"` - full node_modules includes CLI |
+| **Standalone mode still being used** | Ensure `next.config.docker.js` copied, `NEXT_OUTPUT_MODE=""` set |
+| **node_modules symlink issues** | Copy full node_modules from builder |
+| `sh: prisma: not found` | Set `ENV PATH="/srv/app/node_modules/.bin:$PATH"` |
 | `Cannot find module 'get-tsconfig'` | Don't use tsx at runtime. Pre-compile seed.ts to JS |
-| `Cannot find type definition file for 'minimatch'` | Add `--types node` flag to tsc command |
 | 401 Unauthorized on login | Ensure seed.ts upsert includes password in update clause |
-| Prisma client not found | Pre-create dirs, then copy `.prisma` and `@prisma` from `/build/` |
 | Container starts but seed doesn't run | Check if seed.js exists in `/srv/app/scripts/` |
-| New database columns not appearing | Ensure entrypoint runs `prisma db push` before queries |
-| `The table does not exist` | Migration not running - verify entrypoint |
-| File uploads failing | Ensure uploads volume mounted at `/srv/app/uploads` |
-| Files not persisting after restart | Check `uploads-data` volume uses `/srv/app/uploads` |
+| New database columns not appearing | Ensure start.sh runs `prisma db push` before queries |
 | COPY failed: file not found | Ensure `nextjs_space/` prefix on all COPY source paths |
-| 502 but container is running | App binding to `127.0.0.1` instead of `0.0.0.0` | Ensure `ENV HOSTNAME="0.0.0.0"` in Dockerfile |
-| `bash: executable file not found` (code 127) | Alpine Linux doesn't have bash by default | Dockerfile now installs bash; or use `sh` as fallback |
-| `XX002` PostgreSQL index error | Database index corruption | Run `REINDEX INDEX index_name;` or `REINDEX TABLE table_name;` |
+| 502 but container is running | App binding to wrong host - ensure `HOSTNAME="0.0.0.0"` |
+| Prisma generates to wrong path | Remove `output` line from prisma schema |
 
-### 15.1 Docker Cache Issues: `Cannot find module 'next'` with `server.js`
+### 15.1 Platform Runs `node server.js` Regardless of Dockerfile CMD
 
-**Symptom:** Container logs show:
+**Symptom:** You've changed the Dockerfile to use `npx next start`, but logs show:
 ```
 Error: Cannot find module 'next'
 Require stack:
 - /srv/app/server.js
 ```
 
-**Root Cause:** Docker/Coolify is using a **cached image** from a previous build that used `output: 'standalone'`. The cached runner stage still contains the old `server.js` file even though the source code has been updated.
+**Root Cause:** Deployment platforms (Coolify, Dokploy, etc.) have a hardcoded start command that runs `node server.js`, ignoring the Dockerfile's CMD.
 
-**Solution 1: Force Rebuild in Coolify**
-1. Go to your app in Coolify dashboard
+**Solution:** Use v11 approach - provide a `server.js` that works:
+
+```javascript
+const { spawn } = require('child_process');
+const path = require('path');
+
+const nextBin = path.join(__dirname, 'node_modules', 'next', 'dist', 'bin', 'next');
+
+spawn('node', [nextBin, 'start', '-p', process.env.PORT || '3000', '-H', '0.0.0.0'], {
+  stdio: 'inherit',
+  cwd: __dirname
+});
+```
+
+This server.js:
+- ✅ Exists (platform is happy)
+- ✅ Doesn't `require('next')` directly (no module resolution issues)
+- ✅ Spawns Next.js correctly
+
+### 15.2 Docker Cache Issues
+
+If you're seeing old code running after deploying changes:
+
+**Solution 1: Force Rebuild in Coolify/Dokploy**
+1. Go to your app in the dashboard
 2. Click **Deployments** → **Rebuild** 
 3. Enable **"Force rebuild"** or **"No cache"** checkbox
 4. Click Deploy
 
 **Solution 2: Clear Docker Cache on VPS**
 ```bash
-# SSH into your VPS
 ssh user@your-vps
-
-# Clear all Docker cache and images
 docker system prune -a --volumes -f
 docker builder prune -a -f
-
-# Then trigger a new deployment from Coolify
 ```
 
-**Solution 3: Add Build Command Options**
-In Coolify's build settings, add to Docker build options:
+**Verification:** Look for version banners in logs:
 ```
---no-cache --pull
+========================================
+  TCP v11 - 2026-02-12T...
+========================================
+
+...
+
+========================================
+  TCP server.js v11 - 2026-02-12
+========================================
 ```
-
-**Verification:** After rebuild, container logs should show:
-```
-Starting Next.js server...
-  ▲ Next.js 14.x.x
-  - Local:        http://0.0.0.0:3000
- ✓ Ready in Xs
-```
-
-**NOT** `/srv/app/server.js` being executed.
-
-### 15.2 Dockerfile Safeguards Against Cached Standalone
-
-The current Dockerfile includes safeguards to prevent this issue:
-
-```dockerfile
-# In builder stage - clean any previous build artifacts
-RUN rm -rf .next
-
-# Verify no standalone in next.config.js
-RUN ! grep -q "standalone" next.config.js && echo "✓ No standalone in config"
-
-# Verify no standalone folder after build
-RUN ! test -d .next/standalone && echo "✓ No standalone folder"
-
-# In runner stage - forcefully remove any server.js
-RUN rm -f ./server.js && rm -rf ./.next/standalone
-
-# Fail build if server.js still exists
-RUN ! test -f ./server.js && echo "✓ No server.js - will use next start"
-```
-
-The Dockerfile also includes a **cache bust comment** that can be updated to force rebuilds:
-```dockerfile
-# Cache bust: 2026-02-11-v3 - CRITICAL: Remove server.js, use next start only
-```
-
-To force a rebuild, increment the version or change the date in this comment.
 
 ---
 
 ## 16. Troubleshooting 502 Errors
 
-A **502 Bad Gateway** error means the reverse proxy (Coolify/Traefik/Nginx) cannot connect to your application. Here's how to diagnose:
+A **502 Bad Gateway** error means the reverse proxy cannot connect to your application.
 
 ### Step 1: Check if Container is Running
 
 ```bash
-docker ps -a | grep traffic
-# OR for Coolify:
 docker ps -a | grep tcp
 ```
-
-**Expected:** Container should show status `Up` with port `3000` exposed.
 
 **If container is not running or keeps restarting:**
 ```bash
@@ -894,147 +786,65 @@ docker logs <container_name> --tail 200
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | Container immediately exits | Missing `DATABASE_URL` | Add database connection string to env vars |
-| "Connection refused to localhost:5432" | Database not accessible | Check database is running, use container name not `localhost` |
-| "prisma: not found" in logs | Missing Prisma CLI | Ensure Dockerfile copies `node_modules/.bin` |
-| "Cannot find module '@prisma/client'" | Prisma client not generated | Ensure `npx prisma generate` runs in builder stage |
-| Container runs but 502 persists | Wrong port or hostname binding | Ensure `ENV PORT=3000` and `ENV HOSTNAME="0.0.0.0"` |
-| Health check fails | App not starting properly | Check entrypoint logs, verify `server.js` exists |
+| "Connection refused to localhost:5432" | Database not accessible | Use container name not `localhost` |
+| "prisma: not found" in logs | Missing Prisma CLI | Ensure full node_modules copied |
+| "Cannot find module '@prisma/client'" | Prisma client not generated | Ensure `npx prisma generate` runs in builder |
+| Container runs but 502 persists | Wrong hostname binding | Ensure `ENV HOSTNAME="0.0.0.0"` |
+| `Cannot find module 'next'` | Wrong server.js | Use v11 server.js with `spawn()` |
 
-### Critical: Network Binding Configuration
+### Step 3: Test Locally
 
-The app **MUST** listen on `0.0.0.0`, not `127.0.0.1`. This is configured in the Dockerfile:
-
-```dockerfile
-ENV PORT=3000
-ENV HOSTNAME="0.0.0.0"
-```
-
-**Why this matters:**
-- `0.0.0.0` binds to ALL network interfaces (accessible from outside the container)
-- `127.0.0.1` only binds to localhost (only accessible from INSIDE the container)
-
-If your app binds to `127.0.0.1`, the reverse proxy (Traefik/Nginx/Coolify) cannot reach it, resulting in 502 errors.
-
-**Verification:** Check container logs for the startup message:
-```
-Starting Next.js server...
-▲ Next.js 14.x.x
-- Local: http://0.0.0.0:3000
-```
-
-If you see `http://127.0.0.1:3000` instead, the binding is incorrect.
-
-### Step 3: Database Connection Issues
-
-For Coolify with managed PostgreSQL:
-```env
-# Use container name, not localhost
-DATABASE_URL='postgresql://user:password@tcp-db:5432/tcp'
-```
-
-For external database:
-```env
-# Use actual IP or domain
-DATABASE_URL='postgresql://user:password@your-db-host.com:5432/tcp'
-```
-
-### Step 4: Verify App Starts Correctly
-
-Enter the container and check manually:
 ```bash
-# Bash is now installed in the container
-docker exec -it <container_name> bash
+# Build and run locally
+docker build -t tcp-test .
+docker run --rm -p 3000:3000 \
+  -e DATABASE_URL="postgresql://..." \
+  -e NEXTAUTH_SECRET="test" \
+  -e NEXTAUTH_URL="http://localhost:3000" \
+  tcp-test
 
-# Or use sh as fallback
-docker exec -it <container_name> sh
-
-# Inside container:
-ls -la /srv/app/
-
-# Verify NO server.js exists (we use next start, not standalone)
-test -f server.js && echo "ERROR: server.js exists - cached image!" || echo "✓ No server.js"
-
-# Manually test starting the app
-npx next start -p 3000 -H 0.0.0.0
-```
-
-> ℹ️ **Note:** The Dockerfile now installs `bash` in the runner stage (`apk add --no-cache wget openssl bash`). If you're using an older image without bash, use `sh` instead.
-
-> ⚠️ **IMPORTANT:** If you see `server.js` in `/srv/app/`, you have a cached Docker image. Force a rebuild with `--no-cache` (see Section 15.1).
-
-### Step 5: Coolify-Specific Checks
-
-1. **Environment Variables**: In Coolify dashboard → Your App → Environment → Ensure all required vars are set
-2. **Build Pack**: Use "Dockerfile" build pack, not "Nixpacks"
-3. **Port Configuration**: Coolify should auto-detect port 3000 from `EXPOSE`
-4. **Health Check**: Coolify uses the Dockerfile HEALTHCHECK - ensure `/api/health` endpoint works
-
-### Step 6: Full Rebuild
-
-If all else fails, clear Docker cache completely:
-```bash
-docker system prune -a --volumes
-docker builder prune -a
-# Then rebuild
-docker compose up -d --build
+# Check if app responds
+curl http://localhost:3000/api/health
 ```
 
 ---
 
 ## 17. Coolify-Specific Deployment
 
-### Initial Setup
+### Application Settings
 
-1. **Create New Resource** → Select "Docker Compose" or "Dockerfile"
-2. **Connect Repository**: Link to `https://github.com/krocs2k/Traffic-Control-Plane`
-3. **Build Configuration**:
-   - Build Pack: `Dockerfile`
-   - Dockerfile Location: `./Dockerfile`
-   - Context: `.` (root)
+| Setting | Value |
+|---------|-------|
+| Build Pack | Dockerfile |
+| Dockerfile Location | `./Dockerfile` |
+| Port | 3000 |
+| Health Check Path | `/api/health` |
 
-### Environment Variables in Coolify
+### Environment Variables
 
-Add these in Coolify's Environment section:
+Add these in Coolify's Environment Variables section:
 
-```env
-DATABASE_URL=postgresql://tcp:your_password@tcp-db:5432/tcp
+```
+DATABASE_URL=postgresql://user:pass@db:5432/tcp
 NEXTAUTH_SECRET=your-generated-secret
 NEXTAUTH_URL=https://your-domain.com
-LLM_API_KEY=your-openai-key
+LLM_API_BASE_URL=https://api.openai.com/v1
+LLM_API_KEY=sk-your-key
 LLM_MODEL=gpt-4o-mini
 ```
 
-### Database Setup in Coolify
+### Force Rebuild After Changes
 
-**Option A: Coolify-Managed PostgreSQL**
-1. Create a PostgreSQL resource in Coolify
-2. Use the internal connection URL provided
-3. Container name format: `coolify-<project>-postgres`
-
-**Option B: External Database**
-1. Use your external database URL
-2. Ensure firewall allows connection from VPS IP
-
-### Networking
-
-Coolify automatically:
-- Creates a network for your containers
-- Configures Traefik reverse proxy
-- Handles SSL certificates via Let's Encrypt
-
-Ensure containers are on the same network if using Coolify-managed database.
-
-### Persistent Storage
-
-In Coolify's Storage section, add:
-- **Source**: Named volume `uploads-data`
-- **Destination**: `/srv/app/uploads`
+If changes aren't being picked up:
+1. Go to Deployments tab
+2. Click "Redeploy" with "No cache" option
+3. Or SSH to VPS and run: `docker system prune -a -f`
 
 ---
 
 ## 18. Verifying Successful Deployment
 
-After deployment, verify these endpoints:
+After deployment, verify these:
 
 ### Health Check
 ```bash
@@ -1048,29 +858,26 @@ curl -I https://your-domain.com/login
 # Expected: HTTP 200
 ```
 
-### Container Logs (Healthy Start - v4 Entrypoint)
+### Container Logs (Healthy Start - v11)
 
 ```
-=== ENTRYPOINT v4 - 2026-02-12 ===
-Starting application...
-Waiting for database connection...
-Database connected!
-Running database migrations...
-Database schema synchronized!
-Checking database state...
-Running seed script...
-... (seed output) ...
-Starting Next.js server...
-Contents of /srv/app:
-total XX
-drwxr-xr-x  ... .next
-drwxr-xr-x  ... node_modules
--rw-r--r--  ... package.json
-drwxr-xr-x  ... prisma
-drwxr-xr-x  ... public
-drwxr-xr-x  ... scripts
-drwxr-xr-x  ... uploads
-Using next start (NOT node server.js)...
+========================================
+  TCP v11 - 2026-02-12T03:00:00Z
+========================================
+
+Connecting to database...
+OK: Database connected
+OK: Schema synced
+Database has data, syncing...
+... (seed output if needed) ...
+
+Starting Next.js...
+
+========================================
+  TCP server.js v11 - 2026-02-12
+========================================
+
+Starting Next.js via: /srv/app/node_modules/next/dist/bin/next
   ▲ Next.js 14.x.x
   - Local:        http://0.0.0.0:3000
   - Network:      http://0.0.0.0:3000
@@ -1081,14 +888,13 @@ Using next start (NOT node server.js)...
 ### What to Look For in Logs
 
 | Log Message | Meaning |
-|-------------|---------|
-| `=== ENTRYPOINT v4 ===` | ✅ New entrypoint is running |
-| `WARNING: Found cached server.js` | ⚠️ Cached image detected, but cleaned up |
-| `Using next start (NOT node server.js)` | ✅ Correct startup method |
+|-------------|--------|
+| `TCP v11 - <timestamp>` | ✅ Correct start.sh is running |
+| `TCP server.js v11` | ✅ Correct server.js is running |
+| `Starting Next.js via: /srv/app/node_modules/next/dist/bin/next` | ✅ Correct startup method |
 | `✓ Ready in Xs` | ✅ App is running successfully |
-| `node server.js` or `/srv/app/server.js` | ❌ OLD IMAGE - force rebuild! |
-
-> **Note:** The "Ready" message confirms the app is running with `next start`. If you don't see `=== ENTRYPOINT v4 ===`, the image wasn't rebuilt properly.
+| `Cannot find module 'next'` at `require` | ❌ OLD server.js - update to v11 |
+| No version banner | ❌ Image wasn't rebuilt - force rebuild |
 
 ---
 
@@ -1115,7 +921,7 @@ The application supports TOTP-based MFA with backup codes.
 
 **Key Files:**
 | File | Purpose |
-|------|---------|
+|------|--------|
 | `lib/mfa.ts` | MFA utilities (secret generation, TOTP verification, backup codes) |
 | `lib/auth-options.ts` | NextAuth configuration with MFA integration |
 | `app/api/auth/mfa/*` | MFA API endpoints |
@@ -1148,187 +954,53 @@ The application supports TOTP-based MFA with backup codes.
 
 #### Backend Clusters
 - Cluster management with health status tracking
-- Cluster-level metrics and monitoring
+- Load balancing configuration
+- Health check monitoring
 
 #### Read Replicas
-- Lag-aware replica selection algorithm
-- Status tracking: SYNCED, LAGGING, CATCHING_UP, OFFLINE
+- Lag-aware replica selection
 - Manual and automatic replica selection
+- Real-time lag monitoring
 
-#### Load Balancing
-- Multiple algorithm support (round-robin, least-connections, weighted, etc.)
-- Configuration management per cluster
+#### Experiments (A/B Testing & Canary)
+- A/B test and canary deployment experiments
+- Variant management with traffic allocation
+- Metrics tracking and analysis
 
-### Canary/A/B Testing (Experiments)
-
-**Experiment Lifecycle:**
-1. Create experiment with variants and traffic allocation
-2. Start experiment (status: RUNNING)
-3. Collect metrics per variant
-4. Complete or abort experiment
-
-**API Endpoints:**
-| Endpoint | Methods | Purpose |
-|----------|---------|---------|
-| `/api/experiments` | GET, POST | List/create experiments |
-| `/api/experiments/[id]` | GET, PATCH, DELETE | Manage single experiment |
-| `/api/experiments/[id]/metrics` | GET | Get experiment metrics |
-
-### Alerting System
-
+#### Alerting
 - Alert rules with configurable thresholds
-- Alert channels (email, webhook, etc.)
-- Alert states: triggered, acknowledged, resolved, silenced
+- Alert channels (email, Slack, webhook)
+- Alert acknowledgment and resolution
 
-### Audit Logging
+### Demo Credentials
 
-All significant actions are logged to the `AuditLog` table:
+Default users created by seed script (password: `password123`):
 
-**Audit Action Categories:**
-- User actions: login, logout, password changes
-- MFA actions: setup, enable, disable, backup code regeneration
-- Experiment actions: created, updated, deleted
-- Load balancer actions: config created/updated/deleted
-- Alert actions: rule changes, acknowledgments, resolutions
-
-**Key File:** `lib/audit.ts` - Defines `AuditAction` types and `createAuditLog()` function
-
-### API Architecture
-
-#### Authentication Pattern
-All protected API routes follow this pattern:
-```typescript
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth-options';
-
-export async function GET(request: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-  // ... route logic
-}
-```
-
-#### BigInt Serialization
-Some database fields (e.g., `totalRequests`, `totalErrors` in metrics) are BigInt. Convert to Number before JSON serialization:
-```typescript
-const serializedSnapshot = {
-  ...latestSnapshot,
-  totalRequests: Number(latestSnapshot.totalRequests),
-  totalErrors: Number(latestSnapshot.totalErrors),
-};
-```
-
-### Database Schema Notes
-
-**Prisma Configuration:**
-```prisma
-generator client {
-  provider = "prisma-client-js"
-  binaryTargets = ["native", "linux-musl-openssl-3.0.x", "linux-musl-arm64-openssl-3.0.x"]
-  // NO output line - system auto-adds this, must be removed before push
-}
-```
-
-**Key Models:**
-- `User` - With MFA fields: `mfaSecret`, `mfaEnabled`, `mfaBackupCodes`, `mfaVerifiedAt`
-- `Experiment` - Canary/A/B test definitions
-- `ExperimentVariant` - Traffic variants within experiments
-- `RoutingPolicy` - Traffic routing rules
-- `ReadReplica` - Database replica configurations
-- `AlertRule`, `AlertChannel`, `Alert` - Alerting system
-- `AuditLog` - Action audit trail
-
-### Environment Variables Summary
-
-```env
-# Database
-DATABASE_URL='postgresql://user:password@host:5432/db'
-
-# Authentication
-NEXTAUTH_SECRET='generate-with-openssl-rand-base64-32'
-NEXTAUTH_URL='https://your-domain.com'
-
-# LLM API (for AI routing assistant)
-LLM_API_BASE_URL='https://api.openai.com/v1'
-LLM_API_KEY='sk-your-key'
-LLM_MODEL='gpt-4o-mini'
-
-# File Storage
-UPLOAD_DIR='./uploads'
-MAX_FILE_SIZE=52428800
-```
+| Email | Role | Organization |
+|-------|------|-------------|
+| john@doe.com | OWNER | - |
+| alice@acme.com | ADMIN | Acme Corp |
+| bob@acme.com | OPERATOR | Acme Corp |
+| carol@techstart.com | OWNER | TechStart Inc |
+| dave@techstart.com | VIEWER | TechStart Inc |
+| eve@external.com | AUDITOR | Acme Corp |
 
 ---
 
-## Files Reference
+## Version History
 
-### Project Structure for VPS Deployment
-
-```
-traffic-control-plane/           # Project root
-├── Dockerfile                   # <-- At root, NOT in nextjs_space/
-├── .dockerignore                # <-- At root, NOT in nextjs_space/
-├── docker-compose.yml           # Production compose
-├── docker-compose.dev.yml       # Development compose (optional)
-└── nextjs_space/
-    ├── package.json
-    ├── next.config.js
-    ├── docker-entrypoint.sh     # Entrypoint script
-    ├── .env.example             # Environment template
-    ├── prisma/
-    │   └── schema.prisma
-    ├── scripts/
-    │   ├── seed.ts
-    │   └── compiled/
-    │       └── seed.js          # Pre-compiled seed
-    └── app/
-        └── ...
-```
+| Version | Date | Changes |
+|---------|------|--------|
+| v11 | 2026-02-12 | Working server.js with spawn(), platform-compatible |
+| v10 | 2026-02-12 | Fixed Prisma schema output path |
+| v9 | 2026-02-12 | Added next.config.docker.js, ENV NEXT_OUTPUT_MODE |
+| v8 | 2026-02-12 | Removed server.js, npx next start |
+| v7 | 2026-02-11 | Custom server.js that spawns next |
+| v4-v6 | 2026-02-11 | Various standalone removal attempts |
+| v3 | 2026-02-11 | Switch from standalone to next start |
+| v1-v2 | 2026-02-10 | Initial standalone approach |
 
 ---
 
-## Default Credentials
-
-After deployment, login with:
-
-- **Email:** `admin@tcp.local`
-- **Password:** `admin123!`
-
-> ⚠️ **Change the default password immediately after first login!**
-
----
-
-## Quick Deploy Commands
-
-### On VPS (Fresh Deploy)
-```bash
-git clone https://github.com/krocs2k/Traffic-Control-Plane.git
-cd Traffic-Control-Plane
-
-# Create .env file
-cp nextjs_space/.env.example nextjs_space/.env
-# Edit nextjs_space/.env with your values
-
-# Build and run
-docker compose up -d --build
-```
-
-### On VPS (Update Existing)
-```bash
-cd Traffic-Control-Plane
-git pull origin main
-
-# Clear Docker cache (if having build issues)
-docker system prune -a --volumes
-docker builder prune -a
-
-# Rebuild
-docker compose up -d --build
-```
-
-### View Logs
-```bash
-docker compose logs -f app
-```
+**Last Updated:** 2026-02-12 (v11)
+**GitHub:** https://github.com/krocs2k/Traffic-Control-Plane
