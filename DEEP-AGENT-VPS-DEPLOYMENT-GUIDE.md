@@ -282,19 +282,12 @@ npx prisma db push --skip-generate --accept-data-loss 2>&1 || \
   npx prisma db push --skip-generate 2>&1 || true
 echo "OK: Schema synced"
 
-# Seed if needed
-NEEDS_SEED=$(node -e "
-const { PrismaClient } = require('@prisma/client');
-const p = new PrismaClient();
-p.user.count().then(c => console.log(c === 0 ? 'true' : 'false')).catch(() => console.log('true'));
-" 2>/dev/null || echo "true")
-
-if [ "$NEEDS_SEED" = "true" ]; then
-  echo "Seeding database..."
-  node scripts/seed.js
+# Only seed if explicitly enabled via SEED_DATABASE=true environment variable
+if [ "$SEED_DATABASE" = "true" ]; then
+  echo "Seeding database (SEED_DATABASE=true)..."
+  node scripts/seed.js || echo "Seeding failed or already complete"
 else
-  echo "Database has data, syncing..."
-  node scripts/seed.js || true
+  echo "Skipping database seeding (set SEED_DATABASE=true to enable)"
 fi
 
 echo ""
@@ -644,6 +637,15 @@ MAX_FILE_SIZE=52428800
 # Platform Configuration
 PLATFORM_DOMAIN='your-domain.com'
 PLATFORM_IP=''  # Optional
+```
+
+### Optional Variables
+
+```env
+# Database Seeding (Demo Data)
+# Set to 'true' ONLY for initial setup or demo environments
+# Leave unset or 'false' for production to avoid overwriting data
+SEED_DATABASE='false'
 ```
 
 ### Generate Secrets
