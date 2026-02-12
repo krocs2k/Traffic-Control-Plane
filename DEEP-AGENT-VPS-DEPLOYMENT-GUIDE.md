@@ -541,10 +541,23 @@ const admin = await prisma.user.upsert({
 
 **File:** `nextjs_space/docker-entrypoint.sh`
 
+**STATUS: ✅ UPDATED (v4)** - Now includes runtime server.js removal to handle cached Docker images
+
 ```bash
 #!/bin/sh
 set -e
+echo "=== ENTRYPOINT v4 - 2026-02-12 ==="
 echo "Starting application..."
+
+# CRITICAL: Remove server.js if it exists (from cached standalone builds)
+if [ -f "/srv/app/server.js" ]; then
+  echo "WARNING: Found cached server.js - removing it!"
+  rm -f /srv/app/server.js
+fi
+if [ -d "/srv/app/.next/standalone" ]; then
+  echo "WARNING: Found cached standalone folder - removing it!"
+  rm -rf /srv/app/.next/standalone
+fi
 
 # Wait for database to be ready
 echo "Waiting for database connection..."
@@ -583,10 +596,32 @@ else
 fi
 
 echo "Starting Next.js server..."
-exec npx next start -p 3000 -H 0.0.0.0
+
+# Final check - absolutely ensure no server.js
+if [ -f "/srv/app/server.js" ]; then
+  echo "FATAL: server.js still exists after cleanup! Removing..."
+  rm -f /srv/app/server.js
+fi
+
+echo "Contents of /srv/app:"
+ls -la /srv/app/
+
+echo "Using next start (NOT node server.js)..."
+exec node ./node_modules/next/dist/bin/next start -p 3000 -H 0.0.0.0
 ```
 
-> ⚠️ **Note:** We use `npx next start` instead of `node server.js` because we're not using standalone output. This requires the full `node_modules` directory to be present.
+### Key Features of v4 Entrypoint
+
+| Feature | Purpose |
+|---------|---------|
+| **Version identifier** | `=== ENTRYPOINT v4 ===` in logs confirms new code is running |
+| **Runtime server.js removal** | Deletes server.js at startup even if cached image has it |
+| **Standalone folder cleanup** | Removes `.next/standalone` if it exists |
+| **Final check before start** | Double-checks no server.js remains |
+| **Directory listing** | Shows `/srv/app/` contents for debugging |
+| **Direct node path** | Uses `node ./node_modules/next/dist/bin/next` instead of `npx` |
+
+> ⚠️ **Note:** The runtime cleanup handles the case where Docker/Coolify uses a cached image from a previous standalone build. Even if the Dockerfile changes aren't picked up, the entrypoint will fix it at runtime.
 
 ---
 
@@ -1013,8 +1048,10 @@ curl -I https://your-domain.com/login
 # Expected: HTTP 200
 ```
 
-### Container Logs (Healthy Start)
+### Container Logs (Healthy Start - v4 Entrypoint)
+
 ```
+=== ENTRYPOINT v4 - 2026-02-12 ===
 Starting application...
 Waiting for database connection...
 Database connected!
@@ -1022,7 +1059,18 @@ Running database migrations...
 Database schema synchronized!
 Checking database state...
 Running seed script...
+... (seed output) ...
 Starting Next.js server...
+Contents of /srv/app:
+total XX
+drwxr-xr-x  ... .next
+drwxr-xr-x  ... node_modules
+-rw-r--r--  ... package.json
+drwxr-xr-x  ... prisma
+drwxr-xr-x  ... public
+drwxr-xr-x  ... scripts
+drwxr-xr-x  ... uploads
+Using next start (NOT node server.js)...
   ▲ Next.js 14.x.x
   - Local:        http://0.0.0.0:3000
   - Network:      http://0.0.0.0:3000
@@ -1030,7 +1078,17 @@ Starting Next.js server...
  ✓ Ready in Xs
 ```
 
-> **Note:** The "Ready" message confirms the app is running with `next start`.
+### What to Look For in Logs
+
+| Log Message | Meaning |
+|-------------|---------|
+| `=== ENTRYPOINT v4 ===` | ✅ New entrypoint is running |
+| `WARNING: Found cached server.js` | ⚠️ Cached image detected, but cleaned up |
+| `Using next start (NOT node server.js)` | ✅ Correct startup method |
+| `✓ Ready in Xs` | ✅ App is running successfully |
+| `node server.js` or `/srv/app/server.js` | ❌ OLD IMAGE - force rebuild! |
+
+> **Note:** The "Ready" message confirms the app is running with `next start`. If you don't see `=== ENTRYPOINT v4 ===`, the image wasn't rebuilt properly.
 
 ---
 
