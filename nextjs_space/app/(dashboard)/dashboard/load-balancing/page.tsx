@@ -145,7 +145,7 @@ export default function LoadBalancingPage() {
       const res = await fetch('/api/backends/clusters');
       if (res.ok) {
         const data = await res.json();
-        setClusters(data);
+        setClusters(data.clusters || []);
       }
     } catch (error) {
       console.error('Error fetching clusters:', error);

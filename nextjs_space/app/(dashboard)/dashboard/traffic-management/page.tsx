@@ -131,7 +131,10 @@ export default function TrafficManagementPage() {
       if (cbRes.ok) setCircuitBreakers(await cbRes.json());
       if (rlRes.ok) setRateLimits(await rlRes.json());
       if (backendsRes.ok) setBackends(await backendsRes.json());
-      if (clustersRes.ok) setClusters(await clustersRes.json());
+      if (clustersRes.ok) {
+        const clustersData = await clustersRes.json();
+        setClusters(clustersData.clusters || []);
+      }
     } catch (error) {
       console.error('Error fetching data:', error);
       toast.error('Failed to fetch data');

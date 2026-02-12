@@ -56,7 +56,7 @@ export async function GET(request: NextRequest) {
       orderBy: { name: 'asc' }
     });
 
-    return NextResponse.json(clusters);
+    return NextResponse.json({ clusters });
   } catch (error) {
     console.error('Error fetching clusters:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
