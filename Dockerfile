@@ -1,20 +1,15 @@
 FROM node:20-alpine AS base
 
 # ============================================
-# CACHE BUST v6 - 2026-02-12 - EMBEDDED ENTRYPOINT
+# CACHE BUST v7 - 2026-02-12 - CUSTOM SERVER.JS
 # ============================================
-ARG CACHE_DATE=2026-02-12-v6
-RUN echo "Cache bust: ${CACHE_DATE}"
 
-# Install dependencies only when needed
 FROM base AS deps
 RUN apk add --no-cache libc6-compat wget openssl
 WORKDIR /build
-
 COPY nextjs_space/package.json ./
 RUN yarn install --frozen-lockfile || yarn install
 
-# Build stage
 FROM base AS builder
 RUN apk add --no-cache wget openssl
 WORKDIR /build
@@ -27,8 +22,9 @@ RUN npx tsc scripts/seed.ts --outDir scripts/compiled --esModuleInterop \
     --module commonjs --target es2020 --skipLibCheck --types node \
     || echo "Using pre-compiled seed.js"
 
-RUN rm -rf .next server.js
+RUN rm -rf .next
 
+# next.config.js WITHOUT standalone
 RUN cat > next.config.js << 'EOF'
 /** @type {import('next').NextConfig} */
 const nextConfig = {
@@ -42,15 +38,11 @@ EOF
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN yarn build
 
-RUN ! test -d .next/standalone && echo "No standalone folder - good"
-
 # ============================================
-# PRODUCTION IMAGE - v6 EMBEDDED ENTRYPOINT
+# PRODUCTION IMAGE v7
 # ============================================
 FROM base AS runner
-ARG CACHE_DATE=2026-02-12-v6
-RUN apk add --no-cache wget openssl bash && \
-    echo "Runner v6: ${CACHE_DATE}"
+RUN apk add --no-cache wget openssl bash
 
 WORKDIR /srv/app
 
@@ -65,6 +57,7 @@ ENV HOSTNAME="0.0.0.0"
 RUN mkdir -p ./uploads/public ./uploads/private && \
     chown -R nextjs:nodejs ./uploads
 
+# Copy everything including node_modules
 COPY --from=builder --chown=nextjs:nodejs /build/package.json ./
 COPY --from=builder --chown=nextjs:nodejs /build/next.config.js ./
 COPY --from=builder --chown=nextjs:nodejs /build/node_modules ./node_modules
@@ -73,20 +66,22 @@ COPY --from=builder --chown=nextjs:nodejs /build/public ./public
 COPY --from=builder --chown=nextjs:nodejs /build/prisma ./prisma
 COPY --from=builder --chown=nextjs:nodejs /build/scripts/compiled ./scripts
 
-# Remove any server.js artifacts
-RUN rm -f ./server.js ./.next/standalone/server.js 2>/dev/null || true && \
-    rm -rf ./.next/standalone 2>/dev/null || true
+# Copy the custom server.js that spawns next start
+COPY --from=builder --chown=nextjs:nodejs /build/server.js ./server.js
 
-# ============================================
-# EMBEDDED ENTRYPOINT - v6 (cannot be cached separately)
-# ============================================
+# Verify next module exists
+RUN echo "=== VERIFICATION v7 ===" && \
+    ls -la ./node_modules/next/ && \
+    echo "✓ next module exists"
+
+# Embedded entrypoint
 RUN cat > /srv/app/docker-entrypoint.sh << 'ENTRYPOINT_SCRIPT'
 #!/bin/bash
 set -e
 
 echo ""
 echo "============================================"
-echo "  ENTRYPOINT v6 - EMBEDDED - 2026-02-12"
+echo "  ENTRYPOINT v7 - 2026-02-12"
 echo "============================================"
 echo ""
 
@@ -96,9 +91,6 @@ if [ ! -d "/srv/app/node_modules/next" ]; then
   exit 1
 fi
 echo "OK: next module found"
-
-# Remove server.js if exists
-rm -f /srv/app/server.js 2>/dev/null || true
 
 # Wait for database
 echo "Waiting for database..."
@@ -132,23 +124,11 @@ else
 fi
 
 echo ""
-echo "============================================"
-echo "  STARTING NEXT.JS (v6 embedded entrypoint)"
-echo "============================================"
-echo ""
-ls -la /srv/app/
-
-exec node ./node_modules/next/dist/bin/next start -p 3000 -H 0.0.0.0
+echo "Starting Next.js server..."
+exec node server.js
 ENTRYPOINT_SCRIPT
 
-RUN chmod +x /srv/app/docker-entrypoint.sh && \
-    cat /srv/app/docker-entrypoint.sh
-
-# Verify structure
-RUN echo "=== FINAL CHECK v6 ===" && \
-    ls -la ./ && \
-    ! test -f ./server.js && echo "OK: No server.js" && \
-    test -d ./node_modules/next && echo "OK: next module exists"
+RUN chmod +x /srv/app/docker-entrypoint.sh
 
 USER nextjs
 
