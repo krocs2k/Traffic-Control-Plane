@@ -1,20 +1,33 @@
-#!/bin/sh
+#!/bin/bash
 set -e
-echo "=== ENTRYPOINT v4 - 2026-02-12 ==="
-echo "Starting application..."
 
-# CRITICAL: Remove server.js if it exists (from cached standalone builds)
+# ============================================
+# ENTRYPOINT v5 - 2026-02-12
+# If you don't see this message, Coolify is using cached image!
+# Run: docker system prune -af && rebuild with "No Cache"
+# ============================================
+echo ""
+echo "======================================="
+echo "  ENTRYPOINT VERSION: v5 (2026-02-12)"
+echo "======================================="
+echo ""
+
+# Verify next module exists
+if [ ! -d "/srv/app/node_modules/next" ]; then
+  echo "FATAL: next module not found!"
+  ls -la /srv/app/node_modules/ | head -20
+  exit 1
+fi
+echo "✓ next module found"
+
+# Remove any server.js (from cached standalone builds)
 if [ -f "/srv/app/server.js" ]; then
-  echo "WARNING: Found cached server.js - removing it!"
+  echo "WARNING: Removing cached server.js"
   rm -f /srv/app/server.js
 fi
-if [ -d "/srv/app/.next/standalone" ]; then
-  echo "WARNING: Found cached standalone folder - removing it!"
-  rm -rf /srv/app/.next/standalone
-fi
 
-# Wait for database to be ready
-echo "Waiting for database connection..."
+# Wait for database
+echo "Waiting for database..."
 until node -e "
 const { PrismaClient } = require('@prisma/client');
 const p = new PrismaClient();
@@ -23,18 +36,16 @@ p.\$connect().then(() => process.exit(0)).catch(() => process.exit(1));
   echo "Database not ready, waiting..."
   sleep 2
 done
-echo "Database connected!"
+echo "✓ Database connected!"
 
-# ALWAYS run database migrations to sync schema changes
+# Sync database schema
 echo "Running database migrations..."
-npx prisma db push --skip-generate --accept-data-loss 2>&1 || {
-  echo "Warning: prisma db push failed, attempting without --accept-data-loss..."
-  npx prisma db push --skip-generate 2>&1 || echo "Migration skipped (may already be in sync)"
-}
-echo "Database schema synchronized!"
+npx prisma db push --skip-generate --accept-data-loss 2>&1 || \
+  npx prisma db push --skip-generate 2>&1 || \
+  echo "Migration skipped (already in sync)"
+echo "✓ Database schema synchronized!"
 
-# Check if seeding is needed
-echo "Checking database state..."
+# Check if seeding needed
 NEEDS_SEED=$(node -e "
 const { PrismaClient } = require('@prisma/client');
 const p = new PrismaClient();
@@ -49,16 +60,12 @@ else
   node scripts/seed.js || echo "Seed sync completed"
 fi
 
-echo "Starting Next.js server..."
-
-# Final check - absolutely ensure no server.js
-if [ -f "/srv/app/server.js" ]; then
-  echo "FATAL: server.js still exists after cleanup! Removing..."
-  rm -f /srv/app/server.js
-fi
-
-echo "Contents of /srv/app:"
+# Final structure check
+echo ""
+echo "=== Starting Next.js (v5 entrypoint) ==="
+echo "Working directory: $(pwd)"
+echo "Contents:"
 ls -la /srv/app/
 
-echo "Using next start (NOT node server.js)..."
+# Start Next.js using the next binary directly
 exec node ./node_modules/next/dist/bin/next start -p 3000 -H 0.0.0.0
