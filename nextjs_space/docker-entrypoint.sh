@@ -1,6 +1,17 @@
 #!/bin/sh
 set -e
+echo "=== ENTRYPOINT v4 - 2026-02-12 ==="
 echo "Starting application..."
+
+# CRITICAL: Remove server.js if it exists (from cached standalone builds)
+if [ -f "/srv/app/server.js" ]; then
+  echo "WARNING: Found cached server.js - removing it!"
+  rm -f /srv/app/server.js
+fi
+if [ -d "/srv/app/.next/standalone" ]; then
+  echo "WARNING: Found cached standalone folder - removing it!"
+  rm -rf /srv/app/.next/standalone
+fi
 
 # Wait for database to be ready
 echo "Waiting for database connection..."
@@ -39,4 +50,15 @@ else
 fi
 
 echo "Starting Next.js server..."
-exec npx next start -p 3000 -H 0.0.0.0
+
+# Final check - absolutely ensure no server.js
+if [ -f "/srv/app/server.js" ]; then
+  echo "FATAL: server.js still exists after cleanup! Removing..."
+  rm -f /srv/app/server.js
+fi
+
+echo "Contents of /srv/app:"
+ls -la /srv/app/
+
+echo "Using next start (NOT node server.js)..."
+exec node ./node_modules/next/dist/bin/next start -p 3000 -H 0.0.0.0

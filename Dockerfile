@@ -1,6 +1,6 @@
 FROM node:20-alpine AS base
 
-# Cache bust: 2026-02-11-v3 - CRITICAL: Remove server.js, use next start only
+# Cache bust: 2026-02-12-v4 - Runtime server.js removal in entrypoint
 # Install dependencies only when needed
 FROM base AS deps
 RUN apk add --no-cache libc6-compat wget openssl
