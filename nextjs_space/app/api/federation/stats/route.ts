@@ -9,7 +9,7 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth-options';
 import { prisma } from '@/lib/db';
 import { getFederationStats, getAllPeers } from '@/lib/federation';
-import { getAllCacheStats } from '@/lib/cache';
+import { getGlobalStats } from '@/lib/cache';
 import { getMetricsQueueStats } from '@/lib/metrics-queue';
 
 export async function GET(request: NextRequest) {
@@ -35,7 +35,7 @@ export async function GET(request: NextRequest) {
     const peers = getAllPeers();
 
     // Get cache stats
-    const cacheStats = getAllCacheStats();
+    const cacheStats = getGlobalStats();
 
     // Get metrics queue stats
     const metricsQueueStats = getMetricsQueueStats();

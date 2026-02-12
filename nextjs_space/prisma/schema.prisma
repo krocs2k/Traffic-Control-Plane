@@ -123,12 +123,15 @@ model AuditLog {
   resourceId   String?
   details      Json         @default("{}")
   ipAddress    String?
+  archived     Boolean      @default(false)
+  archivedAt   DateTime?
   createdAt    DateTime     @default(now())
 
   @@index([orgId])
   @@index([userId])
   @@index([action])
   @@index([createdAt])
+  @@index([archived])
   @@map("audit_logs")
 }
 

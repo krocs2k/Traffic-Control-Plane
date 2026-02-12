@@ -5,6 +5,7 @@ import { prisma } from '@/lib/db';
 import { createAuditLog, getClientIP } from '@/lib/audit';
 import { checkPermission } from '@/lib/rbac';
 import { BackendStatus } from '@prisma/client';
+import { invalidateBackendCaches } from '@/lib/cache';
 
 // GET /api/backends - List backends (optionally filtered by cluster)
 export async function GET(request: NextRequest) {
@@ -110,7 +111,7 @@ export async function DELETE(request: NextRequest) {
       where: { id: { in: backendIds } }
     });
 
-    // Audit log
+    // Audit log and cache invalidation
     for (const backend of backends) {
       await createAuditLog({
         orgId: backend.cluster.orgId,
@@ -121,6 +122,11 @@ export async function DELETE(request: NextRequest) {
         details: { name: backend.name, host: backend.host, bulkDelete: true },
         ipAddress: getClientIP(request)
       });
+    }
+
+    // Invalidate caches for all affected organizations
+    for (const orgId of orgIds) {
+      invalidateBackendCaches(orgId);
     }
 
     return NextResponse.json({ 
@@ -194,6 +200,9 @@ export async function POST(request: NextRequest) {
       details: { name, host, port, clusterId },
       ipAddress: getClientIP(request)
     });
+
+    // Invalidate backend caches for the organization
+    invalidateBackendCaches(cluster.orgId);
 
     return NextResponse.json({ backend }, { status: 201 });
   } catch (error) {

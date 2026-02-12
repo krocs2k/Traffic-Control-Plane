@@ -3,29 +3,48 @@ export const dynamic = 'force-dynamic';
 import { NextResponse } from 'next/server';
 import { requirePermission } from '@/lib/rbac';
 import {
-  getGlobalCacheStats,
+  getGlobalStats,
   clearAllCaches,
-  warmCachesForOrg,
-  warmCriticalCaches,
-  invalidateOrgCache,
-  startCacheCleanup,
-  stopCacheCleanup,
+  clearModuleCache,
+  emitOrgChange,
+  getModuleStats,
+  type CacheModule,
 } from '@/lib/cache';
+
+const VALID_MODULES: CacheModule[] = [
+  'endpoints',
+  'clusters',
+  'backends',
+  'loadBalancer',
+  'routingPolicy',
+  'experiment',
+  'replica',
+  'circuitBreaker',
+  'healthCheck',
+  'user',
+  'organization',
+  'federation',
+  'generic',
+];
 
 /**
  * GET /api/cache - Get cache statistics
  */
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const auth = await requirePermission('view_metrics');
     if (auth instanceof NextResponse) return auth;
 
-    const stats = getGlobalCacheStats();
+    const { searchParams } = new URL(request.url);
+    const module = searchParams.get('module') as CacheModule | null;
 
-    return NextResponse.json({
-      success: true,
-      stats,
-    });
+    if (module && VALID_MODULES.includes(module)) {
+      const stats = getModuleStats(module);
+      return NextResponse.json({ success: true, stats });
+    }
+
+    const stats = getGlobalStats();
+    return NextResponse.json({ success: true, stats });
   } catch (error) {
     console.error('Get cache stats error:', error);
     return NextResponse.json(
@@ -39,11 +58,9 @@ export async function GET() {
  * POST /api/cache - Cache management operations
  * Actions:
  *   - clear: Clear all caches
- *   - warm: Warm caches for the organization
- *   - warmCritical: Warm critical caches
- *   - invalidate: Invalidate caches for the organization
- *   - startCleanup: Start background cleanup
- *   - stopCleanup: Stop background cleanup
+ *   - clearModule: Clear a specific module's cache
+ *   - invalidateOrg: Invalidate all caches for an organization
+ *   - invalidateModule: Invalidate a specific module for an organization
  */
 export async function POST(request: Request) {
   try {
@@ -51,7 +68,7 @@ export async function POST(request: Request) {
     if (auth instanceof NextResponse) return auth;
 
     const body = await request.json().catch(() => ({}));
-    const { action } = body;
+    const { action, module, orgId } = body;
 
     switch (action) {
       case 'clear':
@@ -61,48 +78,57 @@ export async function POST(request: Request) {
           message: 'All caches cleared',
         });
 
-      case 'warm':
-        if (auth.orgId) {
-          await warmCachesForOrg(auth.orgId);
+      case 'clearModule':
+        if (!module || !VALID_MODULES.includes(module)) {
+          return NextResponse.json(
+            { error: `Invalid module. Valid modules: ${VALID_MODULES.join(', ')}` },
+            { status: 400 }
+          );
+        }
+        clearModuleCache(module);
+        return NextResponse.json({
+          success: true,
+          message: `Cache cleared for module: ${module}`,
+        });
+
+      case 'invalidateOrg':
+        const targetOrgId = orgId || auth.orgId;
+        if (!targetOrgId) {
+          return NextResponse.json(
+            { error: 'Organization ID required' },
+            { status: 400 }
+          );
+        }
+        // Invalidate all modules for the organization
+        for (const mod of VALID_MODULES) {
+          emitOrgChange(mod, targetOrgId, 'update');
         }
         return NextResponse.json({
           success: true,
-          message: 'Caches warmed for organization',
+          message: `All caches invalidated for organization: ${targetOrgId}`,
         });
 
-      case 'warmCritical':
-        await warmCriticalCaches();
-        return NextResponse.json({
-          success: true,
-          message: 'Critical caches warmed',
-        });
-
-      case 'invalidate':
-        if (auth.orgId) {
-          invalidateOrgCache(auth.orgId);
+      case 'invalidateModule':
+        if (!module || !VALID_MODULES.includes(module)) {
+          return NextResponse.json(
+            { error: `Invalid module. Valid modules: ${VALID_MODULES.join(', ')}` },
+            { status: 400 }
+          );
+        }
+        const modOrgId = orgId || auth.orgId;
+        if (modOrgId) {
+          emitOrgChange(module, modOrgId, 'update');
+        } else {
+          clearModuleCache(module);
         }
         return NextResponse.json({
           success: true,
-          message: 'Organization caches invalidated',
-        });
-
-      case 'startCleanup':
-        startCacheCleanup();
-        return NextResponse.json({
-          success: true,
-          message: 'Background cleanup started',
-        });
-
-      case 'stopCleanup':
-        stopCacheCleanup();
-        return NextResponse.json({
-          success: true,
-          message: 'Background cleanup stopped',
+          message: `Cache invalidated for module: ${module}`,
         });
 
       default:
         return NextResponse.json(
-          { error: 'Invalid action. Use: clear, warm, warmCritical, invalidate, startCleanup, stopCleanup' },
+          { error: 'Invalid action. Use: clear, clearModule, invalidateOrg, invalidateModule' },
           { status: 400 }
         );
     }

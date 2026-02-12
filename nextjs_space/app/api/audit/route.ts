@@ -15,6 +15,7 @@ export async function GET(request: Request) {
     const action = searchParams?.get?.('action');
     const userId = searchParams?.get?.('userId');
     const resourceType = searchParams?.get?.('resourceType');
+    const archivedParam = searchParams?.get?.('archived');
 
     const where: Record<string, unknown> = {
       orgId: auth?.orgId ?? '',
@@ -29,8 +30,16 @@ export async function GET(request: Request) {
     if (resourceType) {
       where.resourceType = resourceType;
     }
+    // Filter by archived status (default: show non-archived)
+    if (archivedParam === 'true') {
+      where.archived = true;
+    } else if (archivedParam === 'all') {
+      // Show all (no filter)
+    } else {
+      where.archived = false;
+    }
 
-    const [logs, total] = await Promise.all([
+    const [logs, total, archivedCount] = await Promise.all([
       prisma.auditLog.findMany({
         where,
         include: {
@@ -47,6 +56,9 @@ export async function GET(request: Request) {
         take: limit,
       }),
       prisma.auditLog.count({ where }),
+      prisma.auditLog.count({ 
+        where: { orgId: auth?.orgId ?? '', archived: true } 
+      }),
     ]);
 
     const auditLogs = logs?.map?.((log: any) => ({
@@ -56,6 +68,8 @@ export async function GET(request: Request) {
       resourceId: log?.resourceId,
       details: log?.details ?? {},
       ipAddress: log?.ipAddress,
+      archived: log?.archived ?? false,
+      archivedAt: log?.archivedAt,
       createdAt: log?.createdAt,
       user: log?.user
         ? {
@@ -74,11 +88,76 @@ export async function GET(request: Request) {
         total,
         totalPages: Math.ceil(total / limit),
       },
+      archivedCount,
     });
   } catch (error) {
     console.error('Get audit logs error:', error);
     return NextResponse.json(
       { error: 'Failed to fetch audit logs' },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * PATCH /api/audit - Bulk archive/unarchive audit logs
+ * Supports:
+ *   - ids=[...] - Archive specific audit logs by ID
+ *   - archiveAll=true - Archive all audit logs for the organization
+ *   - olderThan=<date> - Archive logs older than the specified date
+ *   - unarchive=true - Unarchive instead of archive
+ */
+export async function PATCH(request: Request) {
+  try {
+    const auth = await requirePermission('manage_audit');
+    if (auth instanceof NextResponse) return auth;
+
+    const body = await request.json().catch(() => ({}));
+    const { ids, archiveAll, olderThan, unarchive } = body;
+
+    const where: Record<string, unknown> = {
+      orgId: auth?.orgId ?? '',
+    };
+
+    // Build where clause based on archive criteria
+    if (ids && Array.isArray(ids) && ids.length > 0) {
+      where.id = { in: ids };
+    } else if (olderThan) {
+      const date = new Date(olderThan);
+      if (isNaN(date.getTime())) {
+        return NextResponse.json(
+          { error: 'Invalid date format for olderThan' },
+          { status: 400 }
+        );
+      }
+      where.createdAt = { lt: date };
+    } else if (!archiveAll) {
+      return NextResponse.json(
+        { error: 'Must specify archiveAll, ids, or olderThan' },
+        { status: 400 }
+      );
+    }
+
+    // Update to archive or unarchive
+    const result = await prisma.auditLog.updateMany({
+      where,
+      data: {
+        archived: !unarchive,
+        archivedAt: !unarchive ? new Date() : null,
+      },
+    });
+
+    const action = unarchive ? 'unarchived' : 'archived';
+
+    return NextResponse.json({
+      success: true,
+      count: result.count,
+      message: `Successfully ${action} ${result.count} audit log(s)`,
+    });
+  } catch (error) {
+    console.error('Archive audit logs error:', error);
+    return NextResponse.json(
+      { error: 'Failed to archive audit logs' },
       { status: 500 }
     );
   }
