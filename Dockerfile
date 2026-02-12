@@ -1,7 +1,7 @@
 FROM node:20-alpine AS base
 
 # ============================================
-# v9 - 2026-02-12 - FIX STANDALONE CONFIG
+# v11 - 2026-02-12 - WORKING SERVER.JS
 # ============================================
 
 FROM base AS deps
@@ -16,10 +16,9 @@ WORKDIR /build
 COPY --from=deps /build/node_modules ./node_modules
 COPY nextjs_space/ ./
 
-# CRITICAL: Remove server.js and overwrite next.config.js to prevent standalone
-RUN rm -f server.js && \
-    cp next.config.docker.js next.config.js && \
-    echo "=== next.config.js (v9) ===" && cat next.config.js
+# Use clean next.config.js (no standalone)
+RUN cp next.config.docker.js next.config.js && \
+    echo "=== next.config.js (v11) ===" && cat next.config.js
 
 RUN npx prisma generate
 
@@ -30,18 +29,14 @@ RUN npx tsc scripts/seed.ts --outDir scripts/compiled --esModuleInterop \
 RUN rm -rf .next
 
 ENV NEXT_TELEMETRY_DISABLED=1
-# Explicitly unset NEXT_OUTPUT_MODE to prevent standalone
 ENV NEXT_OUTPUT_MODE=""
 RUN yarn build
 
 # Verify NO standalone was created
-RUN echo "=== Build output check ===" && \
-    ls -la .next/ && \
-    ! test -d .next/standalone && echo "OK: No standalone folder" || \
-    (echo "ERROR: standalone exists - removing" && rm -rf .next/standalone)
+RUN ! test -d .next/standalone || (echo "Removing standalone" && rm -rf .next/standalone)
 
 # ============================================
-# PRODUCTION IMAGE v9
+# PRODUCTION IMAGE v11
 # ============================================
 FROM base AS runner
 RUN apk add --no-cache wget openssl bash
@@ -59,7 +54,7 @@ ENV HOSTNAME="0.0.0.0"
 RUN mkdir -p ./uploads/public ./uploads/private && \
     chown -R nextjs:nodejs ./uploads
 
-# Copy from builder - NO server.js should exist
+# Copy from builder
 COPY --from=builder --chown=nextjs:nodejs /build/package.json ./
 COPY --from=builder --chown=nextjs:nodejs /build/next.config.js ./
 COPY --from=builder --chown=nextjs:nodejs /build/node_modules ./node_modules
@@ -68,30 +63,25 @@ COPY --from=builder --chown=nextjs:nodejs /build/public ./public
 COPY --from=builder --chown=nextjs:nodejs /build/prisma ./prisma
 COPY --from=builder --chown=nextjs:nodejs /build/scripts/compiled ./scripts
 
-# CRITICAL: Delete any server.js that might exist
-RUN rm -f /srv/app/server.js && \
-    rm -rf /srv/app/.next/standalone && \
-    echo "v9: Verified no server.js"
+# Copy server.js that spawns next start (works with deployment platforms)
+COPY --from=builder --chown=nextjs:nodejs /build/server.js ./server.js
 
-# Verify next module exists
-RUN ls -la ./node_modules/next/ > /dev/null && echo "v9: next module verified"
+# Verify
+RUN echo "=== v11 VERIFICATION ===" && \
+    ls -la ./server.js && \
+    ls -la ./node_modules/next/ > /dev/null && \
+    echo "OK: server.js and next module exist"
 
-# Create startup script inline
+# Create startup script
 RUN cat > /srv/app/start.sh << 'STARTSCRIPT'
 #!/bin/bash
 set -e
 
 echo ""
 echo "========================================"
-echo "  TCP v9 - $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "  TCP v11 - $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "========================================"
 echo ""
-
-# Verify no server.js
-if [ -f /srv/app/server.js ]; then
-  echo "WARNING: Found server.js - deleting it!"
-  rm -f /srv/app/server.js
-fi
 
 # Wait for database
 echo "Connecting to database..."
@@ -125,23 +115,11 @@ else
 fi
 
 echo ""
-echo "========================================"
-echo "  Starting Next.js (npx next start)"
-echo "========================================"
-echo ""
-
-# Run next start directly - NOT server.js
-exec npx next start -p ${PORT:-3000} -H ${HOSTNAME:-0.0.0.0}
+echo "Starting Next.js..."
+exec node server.js
 STARTSCRIPT
 
 RUN chmod +x /srv/app/start.sh
-
-# Final verification
-RUN echo "=== FINAL STRUCTURE v9 ===" && \
-    ls -la /srv/app/ && \
-    echo "" && \
-    ! test -f /srv/app/server.js && echo "VERIFIED: No server.js" && \
-    test -f /srv/app/start.sh && echo "VERIFIED: start.sh exists"
 
 USER nextjs
 
