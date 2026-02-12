@@ -1,7 +1,7 @@
 FROM node:20-alpine AS base
 
 # ============================================
-# CACHE BUST v7 - 2026-02-12 - CUSTOM SERVER.JS
+# v8 - 2026-02-12 - NO SERVER.JS AT ALL
 # ============================================
 
 FROM base AS deps
@@ -16,6 +16,9 @@ WORKDIR /build
 COPY --from=deps /build/node_modules ./node_modules
 COPY nextjs_space/ ./
 
+# CRITICAL: Remove any server.js that might exist
+RUN rm -f server.js
+
 RUN npx prisma generate
 
 RUN npx tsc scripts/seed.ts --outDir scripts/compiled --esModuleInterop \
@@ -24,7 +27,7 @@ RUN npx tsc scripts/seed.ts --outDir scripts/compiled --esModuleInterop \
 
 RUN rm -rf .next
 
-# next.config.js WITHOUT standalone
+# next.config.js - explicitly NO standalone
 RUN cat > next.config.js << 'EOF'
 /** @type {import('next').NextConfig} */
 const nextConfig = {
@@ -38,8 +41,11 @@ EOF
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN yarn build
 
+# Verify no standalone
+RUN ! test -d .next/standalone || (echo "ERROR: standalone exists" && rm -rf .next/standalone)
+
 # ============================================
-# PRODUCTION IMAGE v7
+# PRODUCTION IMAGE v8 - NO SERVER.JS
 # ============================================
 FROM base AS runner
 RUN apk add --no-cache wget openssl bash
@@ -57,7 +63,7 @@ ENV HOSTNAME="0.0.0.0"
 RUN mkdir -p ./uploads/public ./uploads/private && \
     chown -R nextjs:nodejs ./uploads
 
-# Copy everything including node_modules
+# Copy from builder - NO server.js
 COPY --from=builder --chown=nextjs:nodejs /build/package.json ./
 COPY --from=builder --chown=nextjs:nodejs /build/next.config.js ./
 COPY --from=builder --chown=nextjs:nodejs /build/node_modules ./node_modules
@@ -66,34 +72,33 @@ COPY --from=builder --chown=nextjs:nodejs /build/public ./public
 COPY --from=builder --chown=nextjs:nodejs /build/prisma ./prisma
 COPY --from=builder --chown=nextjs:nodejs /build/scripts/compiled ./scripts
 
-# Copy the custom server.js that spawns next start
-COPY --from=builder --chown=nextjs:nodejs /build/server.js ./server.js
+# CRITICAL: Delete any server.js that might exist
+RUN rm -f /srv/app/server.js && \
+    rm -rf /srv/app/.next/standalone && \
+    echo "v8: Verified no server.js exists"
 
 # Verify next module exists
-RUN echo "=== VERIFICATION v7 ===" && \
-    ls -la ./node_modules/next/ && \
-    echo "✓ next module exists"
+RUN ls -la ./node_modules/next/ > /dev/null && echo "v8: next module verified"
 
-# Embedded entrypoint
-RUN cat > /srv/app/docker-entrypoint.sh << 'ENTRYPOINT_SCRIPT'
+# Create startup script inline
+RUN cat > /srv/app/start.sh << 'STARTSCRIPT'
 #!/bin/bash
 set -e
 
 echo ""
-echo "============================================"
-echo "  ENTRYPOINT v7 - 2026-02-12"
-echo "============================================"
+echo "========================================"
+echo "  TCP v8 - $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "========================================"
 echo ""
 
-# Verify next module
-if [ ! -d "/srv/app/node_modules/next" ]; then
-  echo "FATAL: next module not found!"
-  exit 1
+# Verify no server.js
+if [ -f /srv/app/server.js ]; then
+  echo "WARNING: Found server.js - deleting it!"
+  rm -f /srv/app/server.js
 fi
-echo "OK: next module found"
 
 # Wait for database
-echo "Waiting for database..."
+echo "Connecting to database..."
 until node -e "
 const { PrismaClient } = require('@prisma/client');
 const p = new PrismaClient();
@@ -108,7 +113,7 @@ npx prisma db push --skip-generate --accept-data-loss 2>&1 || \
   npx prisma db push --skip-generate 2>&1 || true
 echo "OK: Schema synced"
 
-# Check seeding
+# Seed if needed
 NEEDS_SEED=$(node -e "
 const { PrismaClient } = require('@prisma/client');
 const p = new PrismaClient();
@@ -116,7 +121,7 @@ p.user.count().then(c => console.log(c === 0 ? 'true' : 'false')).catch(() => co
 " 2>/dev/null || echo "true")
 
 if [ "$NEEDS_SEED" = "true" ]; then
-  echo "Running seed..."
+  echo "Seeding database..."
   node scripts/seed.js
 else
   echo "Database has data, syncing..."
@@ -124,11 +129,23 @@ else
 fi
 
 echo ""
-echo "Starting Next.js server..."
-exec node server.js
-ENTRYPOINT_SCRIPT
+echo "========================================"
+echo "  Starting Next.js (npx next start)"
+echo "========================================"
+echo ""
 
-RUN chmod +x /srv/app/docker-entrypoint.sh
+# Run next start directly - NOT server.js
+exec npx next start -p ${PORT:-3000} -H ${HOSTNAME:-0.0.0.0}
+STARTSCRIPT
+
+RUN chmod +x /srv/app/start.sh
+
+# Final verification
+RUN echo "=== FINAL STRUCTURE v8 ===" && \
+    ls -la /srv/app/ && \
+    echo "" && \
+    ! test -f /srv/app/server.js && echo "VERIFIED: No server.js" && \
+    test -f /srv/app/start.sh && echo "VERIFIED: start.sh exists"
 
 USER nextjs
 
@@ -137,4 +154,4 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1
 
-ENTRYPOINT ["/srv/app/docker-entrypoint.sh"]
+CMD ["/srv/app/start.sh"]
