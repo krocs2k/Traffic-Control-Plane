@@ -64,6 +64,9 @@ export type AuditAction =
   | 'alert.resolved'
   | 'alert.silenced'
   | 'alert.updated'
+  | 'alert.archived'
+  | 'alert.unarchived'
+  | 'alert.deleted'
   // Endpoint Actions
   | 'endpoint.created'
   | 'endpoint.updated'

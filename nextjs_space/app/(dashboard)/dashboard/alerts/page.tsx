@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
@@ -35,8 +36,9 @@ import {
   VolumeX,
   Eye,
   Settings,
-  Play,
-  Search,
+  Archive,
+  ArchiveRestore,
+  Loader2,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -78,6 +80,8 @@ interface Alert {
   acknowledgedBy?: string;
   acknowledgedAt?: string;
   resolvedAt?: string;
+  archived?: boolean;
+  archivedAt?: string;
   createdAt: string;
   rule?: { name: string; metric: string; condition: string };
 }
@@ -114,6 +118,7 @@ export default function AlertsPage() {
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('alerts');
+  const [alertViewMode, setAlertViewMode] = useState<'active' | 'resolved' | 'archived'>('active');
   const [ruleDialogOpen, setRuleDialogOpen] = useState(false);
   const [editRule, setEditRule] = useState<AlertRule | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -124,9 +129,15 @@ export default function AlertsPage() {
   const [limit, setLimit] = useState(20);
   const [total, setTotal] = useState(0);
   const [totalPages, setTotalPages] = useState(0);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [severityFilter, setSeverityFilter] = useState<string>('');
-  const [statusFilter, setStatusFilter] = useState<string>('');
+  const [resolvedCount, setResolvedCount] = useState(0);
+  const [archivedCount, setArchivedCount] = useState(0);
+  
+  // Selection state for mass operations
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [archiveDialogOpen, setArchiveDialogOpen] = useState(false);
+  const [deleteAlertsDialogOpen, setDeleteAlertsDialogOpen] = useState(false);
+  const [isArchiving, setIsArchiving] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const [formData, setFormData] = useState({
     name: '',
@@ -165,10 +176,8 @@ export default function AlertsPage() {
       const params = new URLSearchParams({
         page: String(page),
         limit: String(limit),
+        viewMode: alertViewMode,
       });
-      if (searchQuery) params.set('search', searchQuery);
-      if (severityFilter) params.set('severity', severityFilter);
-      if (statusFilter) params.set('status', statusFilter);
       
       const res = await fetch(`/api/alerts?${params.toString()}`);
       if (res.ok) {
@@ -178,28 +187,119 @@ export default function AlertsPage() {
           setTotal(data.pagination.total);
           setTotalPages(data.pagination.totalPages);
         }
+        setArchivedCount(data.archivedCount || 0);
+        setResolvedCount(data.resolvedCount || 0);
       }
     } catch (error) {
       console.error('Error fetching alerts:', error);
     } finally {
       setLoading(false);
     }
-  }, [page, limit, searchQuery, severityFilter, statusFilter]);
+  }, [page, limit, alertViewMode]);
 
   useEffect(() => {
     fetchRules();
     fetchAlerts();
 
-    // Poll for new alerts every 30 seconds (reduced frequency for pagination)
+    // Poll for new alerts every 30 seconds
     const interval = setInterval(() => {
       fetchAlerts();
     }, 30000);
 
     return () => clearInterval(interval);
   }, [fetchRules, fetchAlerts]);
+
+  // Reset selection when view mode changes
+  useEffect(() => {
+    setSelectedIds(new Set());
+    setPage(1);
+  }, [alertViewMode]);
   
   const handlePageChange = (newPage: number) => setPage(newPage);
   const handleLimitChange = (newLimit: number) => { setLimit(newLimit); setPage(1); };
+
+  const toggleSelection = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedIds.size === alerts.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(alerts.map(a => a.id)));
+    }
+  };
+
+  const handleArchiveAlerts = async (unarchive: boolean = false) => {
+    if (selectedIds.size === 0) return;
+    
+    try {
+      setIsArchiving(true);
+      const res = await fetch('/api/alerts', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ids: Array.from(selectedIds),
+          unarchive,
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        toast.success(data.message);
+        setSelectedIds(new Set());
+        fetchAlerts();
+      } else {
+        const error = await res.json();
+        toast.error(error.error || 'Failed to archive alerts');
+      }
+    } catch (error) {
+      console.error('Archive error:', error);
+      toast.error('Failed to archive alerts');
+    } finally {
+      setIsArchiving(false);
+      setArchiveDialogOpen(false);
+    }
+  };
+
+  const handleDeleteAlerts = async () => {
+    if (selectedIds.size === 0) return;
+    
+    try {
+      setIsDeleting(true);
+      const res = await fetch('/api/alerts', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ids: Array.from(selectedIds),
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        toast.success(data.message);
+        setSelectedIds(new Set());
+        fetchAlerts();
+      } else {
+        const error = await res.json();
+        toast.error(error.error || 'Failed to delete alerts');
+      }
+    } catch (error) {
+      console.error('Delete error:', error);
+      toast.error('Failed to delete alerts');
+    } finally {
+      setIsDeleting(false);
+      setDeleteAlertsDialogOpen(false);
+    }
+  };
 
   const handleSubmitRule = async () => {
     try {
@@ -335,21 +435,6 @@ export default function AlertsPage() {
     return <Badge className={colors[status] || 'bg-gray-100'}>{status}</Badge>;
   };
 
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case 'ACTIVE':
-        return <BellRing className="h-4 w-4 text-red-500" />;
-      case 'ACKNOWLEDGED':
-        return <Eye className="h-4 w-4 text-yellow-500" />;
-      case 'RESOLVED':
-        return <CheckCircle className="h-4 w-4 text-green-500" />;
-      case 'SILENCED':
-        return <VolumeX className="h-4 w-4 text-gray-500" />;
-      default:
-        return <Bell className="h-4 w-4" />;
-    }
-  };
-
   const getSeverityIcon = (severity: string) => {
     switch (severity) {
       case 'CRITICAL':
@@ -373,9 +458,9 @@ export default function AlertsPage() {
     );
   }
 
-  const activeAlerts = alerts.filter(a => a.status === 'ACTIVE');
+  const activeAlerts = alerts.filter(a => a.status === 'ACTIVE' && !a.archived);
   const criticalAlerts = activeAlerts.filter(a => a.severity === 'CRITICAL');
-  const acknowledgedAlerts = alerts.filter(a => a.status === 'ACKNOWLEDGED');
+  const acknowledgedAlerts = alerts.filter(a => a.status === 'ACKNOWLEDGED' && !a.archived);
 
   return (
     <div className="space-y-6 p-6">
@@ -391,6 +476,27 @@ export default function AlertsPage() {
           </p>
         </div>
         <div className="flex gap-2">
+          {selectedIds.size > 0 && (
+            <>
+              {alertViewMode === 'archived' ? (
+                <Button variant="outline" onClick={() => handleArchiveAlerts(true)} disabled={isArchiving}>
+                  <ArchiveRestore className="h-4 w-4 mr-2" />
+                  Restore ({selectedIds.size})
+                </Button>
+              ) : alertViewMode === 'resolved' ? (
+                <Button variant="outline" onClick={() => setArchiveDialogOpen(true)} disabled={isArchiving}>
+                  <Archive className="h-4 w-4 mr-2" />
+                  Archive ({selectedIds.size})
+                </Button>
+              ) : null}
+              {alertViewMode === 'archived' && (
+                <Button variant="destructive" onClick={() => setDeleteAlertsDialogOpen(true)} disabled={isDeleting}>
+                  <Trash2 className="h-4 w-4 mr-2" />
+                  Delete ({selectedIds.size})
+                </Button>
+              )}
+            </>
+          )}
           <Button variant="outline" onClick={() => { fetchAlerts(); fetchRules(); }}>
             <RefreshCw className="h-4 w-4 mr-2" />
             Refresh
@@ -463,63 +569,136 @@ export default function AlertsPage() {
         <TabsContent value="alerts" className="mt-4">
           <Card>
             <CardHeader>
-              <CardTitle>Alert Feed</CardTitle>
-              <CardDescription>Real-time alerts from your infrastructure</CardDescription>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle>Alert Feed</CardTitle>
+                  <CardDescription>Real-time alerts from your infrastructure</CardDescription>
+                </div>
+                {alerts.length > 0 && (
+                  <Button variant="outline" size="sm" onClick={toggleSelectAll}>
+                    {selectedIds.size === alerts.length ? 'Deselect All' : 'Select All'}
+                  </Button>
+                )}
+              </div>
             </CardHeader>
             <CardContent>
+              {/* Alert View Tabs */}
+              <Tabs value={alertViewMode} onValueChange={(v) => setAlertViewMode(v as typeof alertViewMode)} className="mb-4">
+                <TabsList>
+                  <TabsTrigger value="active">Active</TabsTrigger>
+                  <TabsTrigger value="resolved" className="flex items-center gap-2">
+                    Resolved
+                    {resolvedCount > 0 && (
+                      <Badge variant="secondary" className="ml-1">{resolvedCount}</Badge>
+                    )}
+                  </TabsTrigger>
+                  <TabsTrigger value="archived" className="flex items-center gap-2">
+                    Archived
+                    {archivedCount > 0 && (
+                      <Badge variant="secondary" className="ml-1">{archivedCount}</Badge>
+                    )}
+                  </TabsTrigger>
+                </TabsList>
+              </Tabs>
+
               {alerts.length === 0 ? (
                 <div className="text-center py-12">
-                  <CheckCircle className="h-12 w-12 mx-auto text-green-500 mb-4" />
-                  <h3 className="text-lg font-semibold">All Clear</h3>
-                  <p className="text-muted-foreground">No alerts at the moment. Alerts will appear here when your alert rules are triggered.</p>
+                  {alertViewMode === 'active' ? (
+                    <>
+                      <CheckCircle className="h-12 w-12 mx-auto text-green-500 mb-4" />
+                      <h3 className="text-lg font-semibold">All Clear</h3>
+                      <p className="text-muted-foreground">No active alerts at the moment.</p>
+                    </>
+                  ) : alertViewMode === 'resolved' ? (
+                    <>
+                      <CheckCircle className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+                      <h3 className="text-lg font-semibold">No Resolved Alerts</h3>
+                      <p className="text-muted-foreground">Resolved alerts will appear here.</p>
+                    </>
+                  ) : (
+                    <>
+                      <Archive className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+                      <h3 className="text-lg font-semibold">No Archived Alerts</h3>
+                      <p className="text-muted-foreground">Archived alerts will appear here.</p>
+                    </>
+                  )}
                 </div>
               ) : (
-                <ScrollArea className="h-[500px]">
-                  <div className="space-y-3">
-                    {alerts.map((alert) => (
-                      <Card key={alert.id} className={`${
-                        alert.status === 'ACTIVE' && alert.severity === 'CRITICAL' ? 'border-red-300 bg-red-50' :
-                        alert.status === 'ACTIVE' ? 'border-yellow-200 bg-yellow-50' : ''
-                      }`}>
-                        <CardContent className="pt-4">
-                          <div className="flex items-start justify-between">
-                            <div className="flex items-start gap-3">
-                              {getSeverityIcon(alert.severity)}
-                              <div className="space-y-1">
-                                <div className="flex items-center gap-2">
-                                  <span className="font-semibold">{alert.title}</span>
-                                  {getSeverityBadge(alert.severity)}
-                                  {getStatusBadge(alert.status)}
-                                </div>
-                                <p className="text-sm text-muted-foreground">{alert.message}</p>
-                                <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                                  <span className="flex items-center gap-1">
-                                    <Clock className="h-3 w-3" />
-                                    {new Date(alert.createdAt).toLocaleString()}
-                                  </span>
-                                  {alert.metricValue !== undefined && alert.threshold !== undefined && (
+                <>
+                  <ScrollArea className="h-[500px]">
+                    <div className="space-y-3">
+                      {alerts.map((alert) => (
+                        <Card key={alert.id} className={`${
+                          selectedIds.has(alert.id) ? 'ring-2 ring-primary' :
+                          alert.status === 'ACTIVE' && alert.severity === 'CRITICAL' ? 'border-red-300 bg-red-50' :
+                          alert.status === 'ACTIVE' ? 'border-yellow-200 bg-yellow-50' : ''
+                        } ${alert.archived ? 'opacity-70' : ''}`}>
+                          <CardContent className="pt-4">
+                            <div className="flex items-start justify-between">
+                              <div className="flex items-start gap-3">
+                                {(alertViewMode === 'resolved' || alertViewMode === 'archived') && (
+                                  <Checkbox
+                                    checked={selectedIds.has(alert.id)}
+                                    onCheckedChange={() => toggleSelection(alert.id)}
+                                    className="mt-1"
+                                  />
+                                )}
+                                {getSeverityIcon(alert.severity)}
+                                <div className="space-y-1">
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span className="font-semibold">{alert.title}</span>
+                                    {getSeverityBadge(alert.severity)}
+                                    {getStatusBadge(alert.status)}
+                                    {alert.archived && (
+                                      <Badge variant="outline" className="bg-muted">
+                                        <Archive className="h-3 w-3 mr-1" />
+                                        Archived
+                                      </Badge>
+                                    )}
+                                  </div>
+                                  <p className="text-sm text-muted-foreground">{alert.message}</p>
+                                  <div className="flex items-center gap-4 text-xs text-muted-foreground">
                                     <span className="flex items-center gap-1">
-                                      <Activity className="h-3 w-3" />
-                                      Value: {alert.metricValue.toFixed(2)} (threshold: {alert.threshold})
+                                      <Clock className="h-3 w-3" />
+                                      {new Date(alert.createdAt).toLocaleString()}
                                     </span>
-                                  )}
-                                  {alert.acknowledgedBy && (
-                                    <span>Acknowledged by: {alert.acknowledgedBy}</span>
-                                  )}
+                                    {alert.metricValue !== undefined && alert.threshold !== undefined && (
+                                      <span className="flex items-center gap-1">
+                                        <Activity className="h-3 w-3" />
+                                        Value: {alert.metricValue.toFixed(2)} (threshold: {alert.threshold})
+                                      </span>
+                                    )}
+                                    {alert.acknowledgedBy && (
+                                      <span>Acknowledged by: {alert.acknowledgedBy}</span>
+                                    )}
+                                    {alert.resolvedAt && (
+                                      <span>Resolved: {new Date(alert.resolvedAt).toLocaleString()}</span>
+                                    )}
+                                  </div>
                                 </div>
                               </div>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              {alert.status === 'ACTIVE' && (
-                                <>
-                                  <Button
-                                    variant="outline"
-                                    size="sm"
-                                    onClick={() => handleAlertAction(alert, 'ACKNOWLEDGED')}
-                                  >
-                                    <Eye className="h-4 w-4 mr-1" />
-                                    Acknowledge
-                                  </Button>
+                              <div className="flex items-center gap-2">
+                                {alert.status === 'ACTIVE' && !alert.archived && (
+                                  <>
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      onClick={() => handleAlertAction(alert, 'ACKNOWLEDGED')}
+                                    >
+                                      <Eye className="h-4 w-4 mr-1" />
+                                      Acknowledge
+                                    </Button>
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      onClick={() => handleAlertAction(alert, 'RESOLVED')}
+                                    >
+                                      <CheckCircle className="h-4 w-4 mr-1" />
+                                      Resolve
+                                    </Button>
+                                  </>
+                                )}
+                                {alert.status === 'ACKNOWLEDGED' && !alert.archived && (
                                   <Button
                                     variant="outline"
                                     size="sm"
@@ -528,38 +707,28 @@ export default function AlertsPage() {
                                     <CheckCircle className="h-4 w-4 mr-1" />
                                     Resolve
                                   </Button>
-                                </>
-                              )}
-                              {alert.status === 'ACKNOWLEDGED' && (
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  onClick={() => handleAlertAction(alert, 'RESOLVED')}
-                                >
-                                  <CheckCircle className="h-4 w-4 mr-1" />
-                                  Resolve
-                                </Button>
-                              )}
+                                )}
+                              </div>
                             </div>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    ))}
-                  </div>
-                </ScrollArea>
-                
-                {/* Pagination */}
-                {totalPages > 0 && (
-                  <DataTablePagination
-                    page={page}
-                    totalPages={totalPages}
-                    total={total}
-                    limit={limit}
-                    onPageChange={handlePageChange}
-                    onLimitChange={handleLimitChange}
-                    className="mt-4"
-                  />
-                )}
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </div>
+                  </ScrollArea>
+                  
+                  {/* Pagination */}
+                  {totalPages > 0 && (
+                    <DataTablePagination
+                      page={page}
+                      totalPages={totalPages}
+                      total={total}
+                      limit={limit}
+                      onPageChange={handlePageChange}
+                      onLimitChange={handleLimitChange}
+                      className="mt-4"
+                    />
+                  )}
+                </>
               )}
             </CardContent>
           </Card>
@@ -804,7 +973,7 @@ export default function AlertsPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Delete Confirmation Dialog */}
+      {/* Delete Rule Confirmation Dialog */}
       <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -816,6 +985,48 @@ export default function AlertsPage() {
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={handleDeleteRule} className="bg-red-600 hover:bg-red-700">
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Archive Alerts Confirmation Dialog */}
+      <AlertDialog open={archiveDialogOpen} onOpenChange={setArchiveDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Archive {selectedIds.size} alert{selectedIds.size !== 1 ? 's' : ''}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Archived alerts will be moved to the Archived tab. You can restore them later if needed.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => handleArchiveAlerts(false)} disabled={isArchiving}>
+              {isArchiving ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Archive className="h-4 w-4 mr-2" />}
+              Archive
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Delete Alerts Confirmation Dialog */}
+      <AlertDialog open={deleteAlertsDialogOpen} onOpenChange={setDeleteAlertsDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete {selectedIds.size} alert{selectedIds.size !== 1 ? 's' : ''}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This action cannot be undone. The selected alerts will be permanently deleted.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteAlerts}
+              disabled={isDeleting}
+              className="bg-red-600 hover:bg-red-700"
+            >
+              {isDeleting ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Trash2 className="h-4 w-4 mr-2" />}
               Delete
             </AlertDialogAction>
           </AlertDialogFooter>

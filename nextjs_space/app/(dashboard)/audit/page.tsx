@@ -16,6 +16,7 @@ import {
   Trash2,
   CheckSquare,
   Square,
+  Download,
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -96,6 +97,7 @@ export default function AuditPage() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [isArchiving, setIsArchiving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
 
   const userRole = session?.user?.currentOrgRole ?? 'VIEWER';
   const canViewAudit = hasPermission(userRole, 'view_audit');
@@ -245,6 +247,41 @@ export default function AuditPage() {
     }
   };
 
+  const handleExportCSV = async () => {
+    try {
+      setIsExporting(true);
+      const params = new URLSearchParams();
+      if (actionFilter) params.append('action', actionFilter);
+      if (viewMode === 'archived') params.append('archived', 'true');
+      else if (viewMode === 'active') params.append('archived', 'false');
+      // For 'all' mode, don't append archived filter
+
+      const res = await fetch(`/api/audit/export?${params.toString()}`);
+      if (res.ok) {
+        const blob = await res.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        const contentDisposition = res.headers.get('Content-Disposition');
+        const filenameMatch = contentDisposition?.match(/filename="?([^"]+)"?/);
+        a.download = filenameMatch ? filenameMatch[1] : `audit-log-${new Date().toISOString().split('T')[0]}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+        toast.success('Audit log exported successfully');
+      } else {
+        const error = await res.json();
+        toast.error(error.error || 'Failed to export logs');
+      }
+    } catch (error) {
+      console.error('Export error:', error);
+      toast.error('Failed to export audit log');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   if (status === 'loading') {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
@@ -276,40 +313,55 @@ export default function AuditPage() {
             Track all significant actions and changes in your organization.
           </p>
         </div>
-        {canManageAudit && selectedIds.size > 0 && (
-          <div className="flex gap-2">
-            {isInArchivedView ? (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => handleArchive(true)}
-                disabled={isArchiving}
-              >
-                <ArchiveRestore className="h-4 w-4 mr-2" />
-                Restore ({selectedIds.size})
-              </Button>
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleExportCSV}
+            disabled={isExporting}
+          >
+            {isExporting ? (
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
             ) : (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setArchiveDialogOpen(true)}
-                disabled={isArchiving}
-              >
-                <Archive className="h-4 w-4 mr-2" />
-                Archive ({selectedIds.size})
-              </Button>
+              <Download className="h-4 w-4 mr-2" />
             )}
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={() => setDeleteDialogOpen(true)}
-              disabled={isDeleting}
-            >
-              <Trash2 className="h-4 w-4 mr-2" />
-              Delete ({selectedIds.size})
-            </Button>
-          </div>
-        )}
+            Export CSV
+          </Button>
+          {canManageAudit && selectedIds.size > 0 && (
+            <>
+              {isInArchivedView ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handleArchive(true)}
+                  disabled={isArchiving}
+                >
+                  <ArchiveRestore className="h-4 w-4 mr-2" />
+                  Restore ({selectedIds.size})
+                </Button>
+              ) : (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setArchiveDialogOpen(true)}
+                  disabled={isArchiving}
+                >
+                  <Archive className="h-4 w-4 mr-2" />
+                  Archive ({selectedIds.size})
+                </Button>
+              )}
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => setDeleteDialogOpen(true)}
+                disabled={isDeleting}
+              >
+                <Trash2 className="h-4 w-4 mr-2" />
+                Delete ({selectedIds.size})
+              </Button>
+            </>
+          )}
+        </div>
       </div>
 
       {/* View Mode Tabs */}

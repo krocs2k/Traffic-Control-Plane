@@ -56,7 +56,8 @@ export function withLazyLoading<P extends object>(
   return function LazyWrapper(props: P) {
     return (
       <Suspense fallback={fallback || <Skeleton className="w-full h-32" />}>
-        <LazyComponent {...props} />
+        {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+        <LazyComponent {...(props as any)} />
       </Suspense>
     );
   };

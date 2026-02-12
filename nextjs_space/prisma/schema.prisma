@@ -1,6 +1,7 @@
 generator client {
     provider = "prisma-client-js"
-    binaryTargets = ["native", "linux-musl-openssl-3.0.x", "linux-musl-arm64-openssl-3.0.x"]
+    binaryTargets = ["native", "linux-musl-arm64-openssl-3.0.x"]
+    output = "/home/ubuntu/traffic-control-plane/nextjs_space/node_modules/.prisma/client"
 }
 
 datasource db {
@@ -726,6 +727,8 @@ model Alert {
   acknowledgedAt DateTime?
   resolvedAt     DateTime?
   notifiedAt     DateTime?
+  archived       Boolean       @default(false)
+  archivedAt     DateTime?
   metadata       Json          @default("{}")
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
@@ -735,6 +738,7 @@ model Alert {
   @@index([status])
   @@index([severity])
   @@index([createdAt])
+  @@index([archived])
   @@map("alerts")
 }
 
