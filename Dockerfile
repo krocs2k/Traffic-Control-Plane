@@ -1,7 +1,7 @@
 FROM node:20-alpine AS base
 
 # ============================================
-# v8 - 2026-02-12 - NO SERVER.JS AT ALL
+# v9 - 2026-02-12 - FIX STANDALONE CONFIG
 # ============================================
 
 FROM base AS deps
@@ -16,8 +16,10 @@ WORKDIR /build
 COPY --from=deps /build/node_modules ./node_modules
 COPY nextjs_space/ ./
 
-# CRITICAL: Remove any server.js that might exist
-RUN rm -f server.js
+# CRITICAL: Remove server.js and overwrite next.config.js to prevent standalone
+RUN rm -f server.js && \
+    cp next.config.docker.js next.config.js && \
+    echo "=== next.config.js (v9) ===" && cat next.config.js
 
 RUN npx prisma generate
 
@@ -27,25 +29,19 @@ RUN npx tsc scripts/seed.ts --outDir scripts/compiled --esModuleInterop \
 
 RUN rm -rf .next
 
-# next.config.js - explicitly NO standalone
-RUN cat > next.config.js << 'EOF'
-/** @type {import('next').NextConfig} */
-const nextConfig = {
-  eslint: { ignoreDuringBuilds: true },
-  typescript: { ignoreBuildErrors: false },
-  images: { unoptimized: true },
-};
-module.exports = nextConfig;
-EOF
-
 ENV NEXT_TELEMETRY_DISABLED=1
+# Explicitly unset NEXT_OUTPUT_MODE to prevent standalone
+ENV NEXT_OUTPUT_MODE=""
 RUN yarn build
 
-# Verify no standalone
-RUN ! test -d .next/standalone || (echo "ERROR: standalone exists" && rm -rf .next/standalone)
+# Verify NO standalone was created
+RUN echo "=== Build output check ===" && \
+    ls -la .next/ && \
+    ! test -d .next/standalone && echo "OK: No standalone folder" || \
+    (echo "ERROR: standalone exists - removing" && rm -rf .next/standalone)
 
 # ============================================
-# PRODUCTION IMAGE v8 - NO SERVER.JS
+# PRODUCTION IMAGE v9
 # ============================================
 FROM base AS runner
 RUN apk add --no-cache wget openssl bash
@@ -63,7 +59,7 @@ ENV HOSTNAME="0.0.0.0"
 RUN mkdir -p ./uploads/public ./uploads/private && \
     chown -R nextjs:nodejs ./uploads
 
-# Copy from builder - NO server.js
+# Copy from builder - NO server.js should exist
 COPY --from=builder --chown=nextjs:nodejs /build/package.json ./
 COPY --from=builder --chown=nextjs:nodejs /build/next.config.js ./
 COPY --from=builder --chown=nextjs:nodejs /build/node_modules ./node_modules
@@ -75,10 +71,10 @@ COPY --from=builder --chown=nextjs:nodejs /build/scripts/compiled ./scripts
 # CRITICAL: Delete any server.js that might exist
 RUN rm -f /srv/app/server.js && \
     rm -rf /srv/app/.next/standalone && \
-    echo "v8: Verified no server.js exists"
+    echo "v9: Verified no server.js"
 
 # Verify next module exists
-RUN ls -la ./node_modules/next/ > /dev/null && echo "v8: next module verified"
+RUN ls -la ./node_modules/next/ > /dev/null && echo "v9: next module verified"
 
 # Create startup script inline
 RUN cat > /srv/app/start.sh << 'STARTSCRIPT'
@@ -87,7 +83,7 @@ set -e
 
 echo ""
 echo "========================================"
-echo "  TCP v8 - $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "  TCP v9 - $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "========================================"
 echo ""
 
@@ -141,7 +137,7 @@ STARTSCRIPT
 RUN chmod +x /srv/app/start.sh
 
 # Final verification
-RUN echo "=== FINAL STRUCTURE v8 ===" && \
+RUN echo "=== FINAL STRUCTURE v9 ===" && \
     ls -la /srv/app/ && \
     echo "" && \
     ! test -f /srv/app/server.js && echo "VERIFIED: No server.js" && \
