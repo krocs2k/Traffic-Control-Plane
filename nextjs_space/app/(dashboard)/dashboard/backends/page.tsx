@@ -24,6 +24,8 @@ import {
   Shuffle,
   Zap,
   Network,
+  CheckSquare,
+  Square,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -31,6 +33,7 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   Dialog,
   DialogContent,
@@ -138,6 +141,8 @@ export default function BackendsPage() {
   const [clusters, setClusters] = useState<BackendCluster[]>([]);
   const [loading, setLoading] = useState(true);
   const [expandedClusters, setExpandedClusters] = useState<Set<string>>(new Set());
+  const [selectedClusters, setSelectedClusters] = useState<Set<string>>(new Set());
+  const [bulkDeleteDialogOpen, setBulkDeleteDialogOpen] = useState(false);
   
   // Dialog states
   const [clusterDialogOpen, setClusterDialogOpen] = useState(false);
@@ -349,6 +354,45 @@ export default function BackendsPage() {
     }
   };
 
+  const toggleClusterSelection = (clusterId: string) => {
+    setSelectedClusters(prev => {
+      const next = new Set(prev);
+      if (next.has(clusterId)) {
+        next.delete(clusterId);
+      } else {
+        next.add(clusterId);
+      }
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedClusters.size === clusters.length) {
+      setSelectedClusters(new Set());
+    } else {
+      setSelectedClusters(new Set(clusters.map(c => c.id)));
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedClusters.size === 0) return;
+    try {
+      const res = await fetch('/api/backends/clusters', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clusterIds: Array.from(selectedClusters), orgId }),
+      });
+      if (!res.ok) throw new Error('Failed to delete clusters');
+      toast.success(`Deleted ${selectedClusters.size} cluster(s) successfully`);
+      setBulkDeleteDialogOpen(false);
+      setSelectedClusters(new Set());
+      fetchClusters();
+    } catch (error) {
+      console.error('Error bulk deleting:', error);
+      toast.error('Failed to delete clusters');
+    }
+  };
+
   if (!orgId) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -365,6 +409,23 @@ export default function BackendsPage() {
           <p className="text-muted-foreground">Manage backend servers and load balancing</p>
         </div>
         <div className="flex gap-2">
+          {canManage && clusters.length > 0 && (
+            <>
+              <Button variant="outline" size="sm" onClick={toggleSelectAll}>
+                {selectedClusters.size === clusters.length ? (
+                  <><CheckSquare className="h-4 w-4 mr-2" />Deselect All</>
+                ) : (
+                  <><Square className="h-4 w-4 mr-2" />Select All</>
+                )}
+              </Button>
+              {selectedClusters.size > 0 && (
+                <Button variant="destructive" size="sm" onClick={() => setBulkDeleteDialogOpen(true)}>
+                  <Trash2 className="h-4 w-4 mr-2" />
+                  Delete ({selectedClusters.size})
+                </Button>
+              )}
+            </>
+          )}
           <Button variant="outline" size="sm" onClick={fetchClusters}>
             <RefreshCw className="h-4 w-4 mr-2" />
             Refresh
@@ -417,20 +478,29 @@ export default function BackendsPage() {
               open={expandedClusters.has(cluster.id)}
               onOpenChange={() => toggleCluster(cluster.id)}
             >
-              <Card>
+              <Card className={selectedClusters.has(cluster.id) ? 'ring-2 ring-primary' : ''}>
                 <CardHeader className="pb-3">
                   <div className="flex items-center justify-between">
-                    <CollapsibleTrigger className="flex items-center gap-2 hover:opacity-80">
-                      {expandedClusters.has(cluster.id) ? (
-                        <ChevronDown className="h-4 w-4" />
-                      ) : (
-                        <ChevronRight className="h-4 w-4" />
+                    <div className="flex items-center gap-3">
+                      {canManage && (
+                        <Checkbox
+                          checked={selectedClusters.has(cluster.id)}
+                          onCheckedChange={() => toggleClusterSelection(cluster.id)}
+                          onClick={(e) => e.stopPropagation()}
+                        />
                       )}
-                      <CardTitle className="text-lg">{cluster.name}</CardTitle>
-                      <Badge variant="secondary" className="ml-2">
-                        {cluster._count.backends} backends
-                      </Badge>
-                    </CollapsibleTrigger>
+                      <CollapsibleTrigger className="flex items-center gap-2 hover:opacity-80">
+                        {expandedClusters.has(cluster.id) ? (
+                          <ChevronDown className="h-4 w-4" />
+                        ) : (
+                          <ChevronRight className="h-4 w-4" />
+                        )}
+                        <CardTitle className="text-lg">{cluster.name}</CardTitle>
+                        <Badge variant="secondary" className="ml-2">
+                          {cluster._count.backends} backends
+                        </Badge>
+                      </CollapsibleTrigger>
+                    </div>
                     {canManage && (
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
@@ -803,6 +873,25 @@ export default function BackendsPage() {
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={handleDelete} className="bg-red-600 hover:bg-red-700">
               Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Bulk Delete Dialog */}
+      <AlertDialog open={bulkDeleteDialogOpen} onOpenChange={setBulkDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete {selectedClusters.size} cluster{selectedClusters.size > 1 ? 's' : ''}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete the selected clusters? This will also delete all backends
+              in these clusters. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleBulkDelete} className="bg-red-600 hover:bg-red-700">
+              Delete {selectedClusters.size} Cluster{selectedClusters.size > 1 ? 's' : ''}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

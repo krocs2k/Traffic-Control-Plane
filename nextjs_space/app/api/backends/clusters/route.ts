@@ -6,6 +6,71 @@ import { createAuditLog, getClientIP } from '@/lib/audit';
 import { checkPermission } from '@/lib/rbac';
 import { LoadBalancerStrategy } from '@prisma/client';
 
+// DELETE /api/backends/clusters - Bulk delete clusters
+export async function DELETE(request: NextRequest) {
+  try {
+    const session = await getServerSession(authOptions);
+    if (!session?.user?.email) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const body = await request.json();
+    const { clusterIds, orgId } = body;
+
+    if (!clusterIds || !Array.isArray(clusterIds) || clusterIds.length === 0) {
+      return NextResponse.json({ error: 'Cluster IDs required' }, { status: 400 });
+    }
+
+    if (!orgId) {
+      return NextResponse.json({ error: 'Organization ID required' }, { status: 400 });
+    }
+
+    // Check permission
+    const user = await prisma.user.findUnique({ where: { email: session.user.email } });
+    if (!user) {
+      return NextResponse.json({ error: 'User not found' }, { status: 404 });
+    }
+
+    const hasPermission = await checkPermission(user.id, orgId, 'manage_backends');
+    if (!hasPermission) {
+      return NextResponse.json({ error: 'Permission denied' }, { status: 403 });
+    }
+
+    // Verify all clusters belong to the org
+    const clusters = await prisma.backendCluster.findMany({
+      where: { id: { in: clusterIds }, orgId },
+      select: { id: true, name: true }
+    });
+
+    if (clusters.length !== clusterIds.length) {
+      return NextResponse.json({ error: 'Some clusters not found or access denied' }, { status: 403 });
+    }
+
+    // Delete all selected clusters (cascades to backends)
+    const deleted = await prisma.backendCluster.deleteMany({
+      where: { id: { in: clusterIds }, orgId }
+    });
+
+    // Audit log for each
+    for (const cluster of clusters) {
+      await createAuditLog({
+        orgId,
+        userId: user.id,
+        action: 'backend_cluster.delete',
+        resourceType: 'backend_cluster',
+        resourceId: cluster.id,
+        details: { name: cluster.name, bulkDelete: true },
+        ipAddress: getClientIP(request)
+      });
+    }
+
+    return NextResponse.json({ message: `Deleted ${deleted.count} clusters` });
+  } catch (error) {
+    console.error('Error bulk deleting clusters:', error);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
+}
+
 // GET /api/backends/clusters - List all clusters for organization
 export async function GET(request: NextRequest) {
   try {
