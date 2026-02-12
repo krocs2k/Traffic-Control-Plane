@@ -5,6 +5,7 @@ import { prisma } from '@/lib/db';
 import { createAuditLog, getClientIP } from '@/lib/audit';
 import { checkPermission } from '@/lib/rbac';
 import { LoadBalancerStrategy } from '@prisma/client';
+import { getCached, invalidateOrgCache } from '@/lib/cache';
 
 // DELETE /api/backends/clusters - Bulk delete clusters
 export async function DELETE(request: NextRequest) {
@@ -50,6 +51,9 @@ export async function DELETE(request: NextRequest) {
     const deleted = await prisma.backendCluster.deleteMany({
       where: { id: { in: clusterIds }, orgId }
     });
+
+    // Invalidate cache for the organization
+    invalidateOrgCache(orgId);
 
     // Audit log for each
     for (const cluster of clusters) {
@@ -108,18 +112,25 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    const clusters = await prisma.backendCluster.findMany({
-      where: { orgId },
-      include: {
-        backends: {
+    // Use caching for cluster fetches - 30 second TTL
+    const clusters = await getCached(
+      `clusters:org:${orgId}`,
+      async () => {
+        return prisma.backendCluster.findMany({
+          where: { orgId: orgId as string },
+          include: {
+            backends: {
+              orderBy: { name: 'asc' }
+            },
+            _count: {
+              select: { backends: true, routingPolicies: true }
+            }
+          },
           orderBy: { name: 'asc' }
-        },
-        _count: {
-          select: { backends: true, routingPolicies: true }
-        }
+        });
       },
-      orderBy: { name: 'asc' }
-    });
+      { ttl: 30000, tags: [`org:${orgId}`] }
+    );
 
     return NextResponse.json({ clusters });
   } catch (error) {
@@ -175,6 +186,9 @@ export async function POST(request: NextRequest) {
         backends: true
       }
     });
+
+    // Invalidate cache for the organization
+    invalidateOrgCache(orgId);
 
     await createAuditLog({
       orgId,

@@ -83,3 +83,58 @@ export async function GET(request: Request) {
     );
   }
 }
+
+/**
+ * DELETE /api/audit - Bulk delete audit logs
+ * Supports: 
+ *   - deleteAll=true - Delete all audit logs for the organization
+ *   - ids=[...] - Delete specific audit logs by ID
+ *   - olderThan=<date> - Delete logs older than the specified date
+ */
+export async function DELETE(request: Request) {
+  try {
+    const auth = await requirePermission('manage_audit');
+    if (auth instanceof NextResponse) return auth;
+
+    const body = await request.json().catch(() => ({}));
+    const { deleteAll, ids, olderThan } = body;
+
+    const where: Record<string, unknown> = {
+      orgId: auth?.orgId ?? '',
+    };
+
+    // Build where clause based on deletion type
+    if (ids && Array.isArray(ids) && ids.length > 0) {
+      where.id = { in: ids };
+    } else if (olderThan) {
+      const date = new Date(olderThan);
+      if (isNaN(date.getTime())) {
+        return NextResponse.json(
+          { error: 'Invalid date format for olderThan' },
+          { status: 400 }
+        );
+      }
+      where.createdAt = { lt: date };
+    } else if (!deleteAll) {
+      return NextResponse.json(
+        { error: 'Must specify deleteAll, ids, or olderThan' },
+        { status: 400 }
+      );
+    }
+
+    // Perform deletion
+    const result = await prisma.auditLog.deleteMany({ where });
+
+    return NextResponse.json({
+      success: true,
+      deleted: result.count,
+      message: `Successfully deleted ${result.count} audit log(s)`,
+    });
+  } catch (error) {
+    console.error('Delete audit logs error:', error);
+    return NextResponse.json(
+      { error: 'Failed to delete audit logs' },
+      { status: 500 }
+    );
+  }
+}
