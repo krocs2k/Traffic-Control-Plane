@@ -479,11 +479,11 @@ export async function getCachedEndpoints(
 ): Promise<EndpointWithCluster[]> {
   const key = `org:${orgId}:endpoints`;
   
-  return cacheGetOrFetch<EndpointWithCluster[]>(
+  return cacheGetOrFetch(
     'endpoints',
     key,
-    async () => {
-      const endpoints = await prisma.trafficEndpoint.findMany({
+    async (): Promise<EndpointWithCluster[]> => {
+      const endpoints = await (prisma.trafficEndpoint.findMany as Function)({
         where: { orgId },
         include: {
           cluster: {
@@ -534,7 +534,7 @@ export async function getCachedLoadBalancerConfigs(
   return cacheGetOrFetch(
     'loadBalancer',
     key,
-    async () => {
+    async (): Promise<LoadBalancerConfig[]> => {
       // First get cluster IDs for this org
       const clusters = await prisma.backendCluster.findMany({
         where: { orgId },
@@ -543,10 +543,11 @@ export async function getCachedLoadBalancerConfigs(
       const clusterIds = clusters.map(c => c.id);
       
       // Then get load balancer configs for those clusters
-      return prisma.loadBalancerConfig.findMany({
+      const configs = await (prisma.loadBalancerConfig.findMany as Function)({
         where: { clusterId: { in: clusterIds } },
         include: { cluster: true }
       });
+      return configs as LoadBalancerConfig[];
     },
     [`org:${orgId}`]
   );
@@ -640,11 +641,11 @@ export async function getCachedEndpoint(
 ): Promise<EndpointWithCluster | null> {
   const key = `endpoint:slug:${slug}`;
   
-  return cacheGetOrFetch<EndpointWithCluster | null>(
+  return cacheGetOrFetch(
     'endpoints',
     key,
-    async () => {
-      const endpoint = await prisma.trafficEndpoint.findUnique({
+    async (): Promise<EndpointWithCluster | null> => {
+      const endpoint = await (prisma.trafficEndpoint.findUnique as Function)({
         where: { slug },
         include: {
           cluster: {
